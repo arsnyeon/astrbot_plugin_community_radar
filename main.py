@@ -18,6 +18,8 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
+from astrbot.core.message.components import Plain
+from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.star.filter.command import GreedyStr
 
 from .bili import BiliClient, BiliError, find_video_id
@@ -39,7 +41,7 @@ def _fmt_time(ts: int) -> str:
     "astrbot_plugin_community_radar",
     "arsnyeon",
     "社区雷达：有自己兴趣的社区雷达，主动逛 B 站 / 抖音 / 小黑盒，按偏好搜索与点评，接得住你分享的链接。",
-    "v0.6.0",
+    "v0.7.0",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
@@ -117,6 +119,87 @@ class CommunityRadarPlugin(Star):
         except Exception:  # noqa: BLE001
             sender = ""
         return bool(sender) and sender == admin
+
+    # ── 主动分享给主人 ────────────────────────────────────────────
+
+    def _platform_name(self) -> str:
+        try:
+            pm = self.context.platform_manager
+            insts = pm.get_insts() if hasattr(pm, "get_insts") else getattr(pm, "platform_insts", [])
+            for inst in insts or []:
+                try:
+                    pid = inst.meta().id
+                    if pid and "webchat" not in str(pid).lower():
+                        return str(pid)
+                except Exception:  # noqa: BLE001
+                    continue
+        except Exception:  # noqa: BLE001
+            pass
+        return "default"
+
+    def _owner_umo(self) -> str:
+        admin = str(self.config.get("admin_uin") or "").strip()
+        if not admin:
+            return ""
+        return f"{self._platform_name()}:FriendMessage:{admin}"
+
+    def _share_state_file(self):
+        from pathlib import Path
+
+        base = Path("/AstrBot/data/plugin_data/astrbot_plugin_community_radar")
+        try:
+            from astrbot.api.star import StarTools
+
+            base = Path(StarTools.get_data_dir("astrbot_plugin_community_radar"))
+        except Exception:  # noqa: BLE001
+            pass
+        return base / "share_state.json"
+
+    def _share_allowed(self) -> tuple[bool, str]:
+        cfg = self.config.get("share") or {}
+        if not cfg.get("enable", True):
+            return False, "主动分享已经关掉了"
+        import json
+
+        path = self._share_state_file()
+        state: dict = {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                state = data
+        except Exception:  # noqa: BLE001
+            state = {}
+        today = time.strftime("%Y-%m-%d")
+        if state.get("day") != today:
+            state = {"day": today, "count": 0, "last": 0}
+        if int(state.get("count") or 0) >= int(cfg.get("max_per_day") or 8):
+            return False, "今天的主动分享额度用完了，明天再说"
+        cooldown = int(cfg.get("cooldown_sec") or 600)
+        if time.time() - float(state.get("last") or 0) < cooldown:
+            return False, "刚才分享过一条了，等会儿再发"
+        return True, ""
+
+    def _mark_shared(self) -> None:
+        import json
+
+        path = self._share_state_file()
+        state: dict = {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                state = data
+        except Exception:  # noqa: BLE001
+            state = {}
+        today = time.strftime("%Y-%m-%d")
+        if state.get("day") != today:
+            state = {"day": today, "count": 0, "last": 0}
+        state["count"] = int(state.get("count") or 0) + 1
+        state["last"] = time.time()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[CommunityRadar] 分享状态写入失败: {exc}")
 
     async def _qr_result(self, event: AstrMessageEvent, path: str, note: str):
         img = getattr(event, "image_result", None)
@@ -538,6 +621,45 @@ class CommunityRadarPlugin(Star):
             return f"发帖成功：{r['url']}" if r.get("url") else "发帖成功，但没拿到帖子编号。"
         except HeyboxError as exc:
             return f"发帖失败：{exc}"
+
+    # ── 主动分享 LLM 工具 ────────────────────────────────────────
+
+    @filter.llm_tool(name="radar_share")
+    async def _t_radar_share(
+        self, event: AstrMessageEvent, title: str, url: str = "", comment: str = ""
+    ) -> str:
+        """把一条你觉得有趣的社区内容主动私聊分享给主人。
+
+        Args:
+            title(string): 内容标题或一句话概括
+            url(string): 原链接
+            comment(string): 你想顺带说的那句话（可选）
+        """
+        name = str(title or "").strip()
+        if not name:
+            return "没有可分享的内容"
+        if not self._is_owner(event):
+            return "只有主人才能让我主动分享给他。"
+        ok, why = self._share_allowed()
+        if not ok:
+            return why
+        umo = self._owner_umo()
+        if not umo:
+            return "没配置主人 QQ 号，没法私聊分享"
+        text = f"看到个有意思的：《{name[:60]}》"
+        note = str(comment or "").strip()
+        if note:
+            text += f"\n{note[:200]}"
+        link = str(url or "").strip()
+        if link:
+            text += f"\n{link}"
+        try:
+            await self.context.send_message(umo, MessageChain([Plain(text)]))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[CommunityRadar] 主动分享失败: {exc}")
+            return f"分享失败：{exc}"
+        self._mark_shared()
+        return "已经私聊分享给主人了"
 
     # ── 抖音 LLM 工具 ────────────────────────────────────────────
 

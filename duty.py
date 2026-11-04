@@ -190,6 +190,10 @@ class BrowseDuty:
         if platforms in ("heybox", "both", "all"):
             heybox_items = await self._search(self.plugin.heybox, "search", picks, heybox_items, count)
 
+        # 只看标题点评不出来，先把前几条的正文 / 热评抓回来
+        await self._enrich("bili", bili_items, limit=3)
+        await self._enrich("heybox", heybox_items, limit=3)
+
         if douyin_items and picks:
             for x in douyin_items:
                 if any(k in x["title"] for k in picks):
@@ -207,8 +211,39 @@ class BrowseDuty:
 
         if not text:
             return
-        text = f"【{hhmm} 逛社区】\n{text}"
         await self._send(text, cfg)
+
+    async def _enrich(self, platform: str, items: list[dict], limit: int = 3) -> None:
+        """给前几条补正文与热评，让点评基于内容而不是标题。"""
+        for it in items[:limit]:
+            try:
+                if platform == "bili" and it.get("bvid"):
+                    v = await self.plugin.bili.view(it["bvid"])
+                    it["_body"] = str(v.get("desc") or "")[:400]
+                    it["_stats"] = f"播放{v.get('play')} 点赞{v.get('like')}"
+                    it["_link"] = f"https://www.bilibili.com/video/{v.get('bvid') or it['bvid']}"
+                    try:
+                        cs = await self.plugin.bili.comments(str(v.get("aid")), limit=4)
+                        it["_comments"] = [f"{c['name']}：{c['text'][:60]}" for c in cs]
+                    except Exception:  # noqa: BLE001
+                        pass
+                elif platform == "heybox" and it.get("link_id"):
+                    # 详情接口对小号会要验证码，先用信息流自带的简介兜底
+                    it["_body"] = str(it.get("desc") or "")[:400]
+                    it["_stats"] = f"赞{it.get('likes') or 0}"
+                    it["_link"] = f"https://www.xiaoheihe.cn/app/bbs/link/{it['link_id']}"
+                    try:
+                        d = await self.plugin.heybox.detail(it["link_id"], comment_limit=3)
+                        it["_body"] = str(d.get("body") or it["_body"])[:400]
+                        it["_stats"] = f"赞{d.get('likes') or 0}"
+                        it["_comments"] = [
+                            f"{c.get('user') or '匿名'}：{str(c.get('text') or '')[:60]}"
+                            for c in (d.get("comments") or [])
+                        ]
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(f"[CommunityRadar] 小黑盒详情不可用，用简介兜底: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"[CommunityRadar] 补充 {platform} 内容失败: {exc}")
 
     # ── 兴趣：由模型自己决定搜什么 ──────────────────────────────
 
@@ -356,23 +391,35 @@ class BrowseDuty:
 
     def _links(self, bili: list[dict], heybox: list[dict], douyin: list[dict] | None = None) -> str:
         def via(x: dict) -> str:
-            return f" [{x['_via']}]" if x.get("_via") else ""
+            return f"（{x['_via']}）" if x.get("_via") else ""
 
-        lines = []
-        if bili:
-            lines.append("B 站：")
-            for v in bili:
-                lines.append(f"· {v['title']}{via(v)} https://www.bilibili.com/video/{v['bvid']}")
-        if heybox:
-            lines.append("小黑盒：")
-            for x in heybox:
-                lines.append(f"· {x['title']}{via(x)} https://www.xiaoheihe.cn/app/bbs/link/{x['link_id']}")
+        def block(items: list[dict], name: str, key: str, url_of) -> list[str]:
+            out: list[str] = []
+            if not items:
+                return out
+            out.append(f"【{name}】")
+            for x in items:
+                out.append(f"- 《{x.get('title') or '无标题'}》 {x.get('_stats') or ''}{via(x)}")
+                body = str(x.get("_body") or "").strip()
+                if body:
+                    out.append(f"  简介：{body[:220]}")
+                comments = x.get("_comments") or []
+                if comments:
+                    out.append("  热评：" + " / ".join(comments[:3]))
+                out.append(f"  链接：{x.get('_link') or url_of(x)}")
+            return out
+
+        lines: list[str] = []
+        lines += block(bili, "B 站", "bvid",
+                       lambda x: f"https://www.bilibili.com/video/{x.get('bvid')}")
+        lines += block(heybox, "小黑盒", "link_id",
+                       lambda x: f"https://www.xiaoheihe.cn/app/bbs/link/{x.get('link_id')}")
         if douyin:
-            lines.append("抖音热榜：")
+            lines.append("【抖音热榜】")
             for x in douyin:
                 hot = x.get("hot_text") or ""
                 hot_part = f" 热度{hot}" if hot not in ("", "-", "?") else ""
-                lines.append(f"· {x['rank']}. {x['title']}{via(x)}{hot_part} {x['url']}")
+                lines.append(f"- {x.get('rank')}. {x.get('title')}{via(x)}{hot_part} {x.get('url')}")
         return "\n".join(lines)
 
     async def _summarize(self, bili: list[dict], heybox: list[dict], cfg: dict,
@@ -386,13 +433,14 @@ class BrowseDuty:
         history = self._recent_history(6)
         history_line = ("\n你之前看过这些，别用同样的角度再聊一遍：\n" + history + "\n") if history else ""
         prompt = (
-            "【这不是任务清单，是你自己刚逛完社区的收获】\n"
+            "【这不是任务清单，是你自己刚逛完社区、想跟朋友随口说两句】\n"
             f"{persona}\n{interest_line}\n"
-            "下面这些是刚刷到的内容。像跟朋友聊天那样，只挑真正让你有反应的几条说说：\n"
-            "- 讲讲为什么在意、让你想到什么、或者想吐槽什么，不要逐条复述，不要列清单\n"
-            "- 没感觉的可以完全跳过，不用凑数，宁可只说一两条\n"
-            "- 提到哪条就把它后面的链接带上，方便对方点开看\n"
-            "- 别写「今日精选」「以下是」这类开场白，也别总结陈词\n"
+            "下面几条都带了简介和热评，你可以据此判断内容到底是什么：\n"
+            "- 只聊你真正有感觉的 1~2 条，其余完全不用提，不用凑数\n"
+            "- 说清为什么在意、想到什么、或者想吐槽什么\n"
+            "- 绝对不要编号、不要列清单、不要「今日精选」「以下是」这类开场白，也别逐条复述标题\n"
+            "- 提到的那条，把链接放在句子里自然带出来\n"
+            "- 整体控制在 150 字以内，像微信发一段话\n"
             f"{history_line}\n内容：\n{links}"
         )
         system_prompt = "你在跟朋友聊自己刚刷到的东西。口语化、自然、有个人好恶，不写小作文。"

@@ -223,5 +223,28 @@
         "default": []
       }
     }
+  },
+  "share": {
+    "type": "object",
+    "description": "主动分享",
+    "hint": "允许它自己看到有趣的内容时，主动私聊分享给你。",
+    "items": {
+      "enable": {
+        "type": "bool",
+        "description": "允许主动分享",
+        "default": true
+      },
+      "cooldown_sec": {
+        "type": "int",
+        "description": "两次分享的最小间隔（秒）",
+        "hint": "避免短时间连着发，默认 10 分钟。",
+        "default": 600
+      },
+      "max_per_day": {
+        "type": "int",
+        "description": "每天最多分享几条",
+        "default": 8
+      }
+    }
   }
 }

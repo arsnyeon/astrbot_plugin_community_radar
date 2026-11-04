@@ -272,8 +272,44 @@ class HeyboxClient:
                 "title": re.sub(r"<[^>]+>", "", str(x.get("title") or x.get("link_title") or x.get("text") or "")),
                 "likes": int(x.get("link_award_num") or x.get("link_like_count") or x.get("like_num") or x.get("award_num") or x.get("likes") or 0),
                 "comments": int(x.get("comment_num") or x.get("comment_count") or 0),
+                "desc": re.sub(r"<[^>]+>", "", str(x.get("description") or x.get("desc") or ""))[:300],
             })
         return out
+
+    async def detail(self, link_id: str, comment_limit: int = 6) -> dict:
+        """帖子详情：标题、作者、点赞、正文、热评。"""
+        d = await self.get("/bbs/app/link/tree", {
+            "link_id": str(link_id), "page": 1, "is_first": 1, "index": 1,
+            "owner_only": 0, "offset": 0, "limit": 20, "sort_filter": "hot",
+        })
+        r = d.get("result") or {}
+        link = r.get("link") or r
+        user = link.get("user") or {}
+        comments = _find_comments(r) or []
+        out = []
+        for c in comments[:comment_limit]:
+            u = c.get("user") or {}
+            text = _text_of(c.get("text") or c.get("content"))
+            if text:
+                out.append({
+                    "user": str(u.get("username") or u.get("nickname") or "匿名"),
+                    "text": text[:120],
+                    "likes": int(c.get("up") or c.get("like_num") or 0),
+                })
+        return {
+            "link_id": str(link_id),
+            "url": f"{WEB_BASE}/app/bbs/link/{link_id}",
+            "title": re.sub(r"<[^>]+>", "", str(link.get("title") or "")),
+            "author": str(user.get("username") or user.get("nickname") or ""),
+            "likes": int(link.get("link_like_count") or link.get("link_award_num") or 0),
+            "body": _text_of(link.get("text")) or str(link.get("description") or ""),
+            "topics": [
+                "#" + str(t.get("name") or "") + "#"
+                for t in (link.get("topics") or [])
+                if isinstance(t, dict) and t.get("name")
+            ],
+            "comments": out,
+        }
 
     async def search(self, query: str, limit: int = 8) -> list[dict]:
         d = await self.get("/bbs/app/api/general/search/v1", {
@@ -291,5 +327,49 @@ class HeyboxClient:
                 "title": re.sub(r"<[^>]+>", "", str(x.get("title") or x.get("link_title") or x.get("text") or "")),
                 "likes": int(x.get("link_award_num") or x.get("link_like_count") or x.get("like_num") or x.get("award_num") or x.get("likes") or 0),
                 "comments": int(x.get("comment_num") or x.get("comment_count") or 0),
+                "desc": re.sub(r"<[^>]+>", "", str(x.get("description") or x.get("desc") or ""))[:300],
             })
         return out
+
+
+def _text_of(value: Any) -> str:
+    """小黑盒正文可能是字符串，也可能是富文本块列表。"""
+    if isinstance(value, str):
+        return re.sub(r"<[^>]+>", " ", value).strip()
+    parts: list[str] = []
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                for key in ("text", "content", "title", "url"):
+                    v = item.get(key)
+                    if isinstance(v, str) and v.strip() and not v.startswith("http"):
+                        parts.append(v)
+    elif isinstance(value, dict):
+        for key in ("text", "content", "description"):
+            v = value.get(key)
+            if isinstance(v, str):
+                parts.append(v)
+    return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+
+def _find_comments(obj: Any, depth: int = 0) -> list[dict]:
+    if depth > 4:
+        return []
+    if isinstance(obj, dict):
+        for key in ("comments", "comment_list", "reply_list"):
+            v = obj.get(key)
+            if isinstance(v, list) and v and isinstance(v[0], dict):
+                return [x for x in v if isinstance(x, dict)]
+        for v in obj.values():
+            hit = _find_comments(v, depth + 1)
+            if hit:
+                return hit
+    elif isinstance(obj, list):
+        for v in obj:
+            hit = _find_comments(v, depth + 1)
+            if hit:
+                return hit
+    return []
+

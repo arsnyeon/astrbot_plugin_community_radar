@@ -185,5 +185,34 @@ class LinkPeek:
     async def _heybox(self, url: str) -> str:
         m = re.search(r"/(?:bbs/)?link/(\d+)", url)
         link_id = m.group(1) if m else ""
-        # 小黑盒帖子正文需要站内接口，这里不猜测端点，保留链接并交给对话中的工具处理
-        return f"小黑盒帖子 {url}" + (f"（编号 {link_id}）" if link_id else "")
+        if not link_id:
+            return f"小黑盒帖子 {url}"
+        # 详情接口对未登录请求经常要验证码，先用信息流里同一条的简介
+        try:
+            for it in await self.plugin.heybox.feed(0):
+                if it.get("link_id") == link_id and it.get("desc"):
+                    return (
+                        f"小黑盒《{it.get('title') or '无标题'}》 "
+                        f"赞{it.get('likes') or 0} 正文摘录:{str(it['desc'])[:220]} {url}"
+                    )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            d = await self.plugin.heybox.detail(link_id)
+        except Exception:  # noqa: BLE001
+            return f"小黑盒帖子 {url}（编号 {link_id}）"
+        body = re.sub(r"\s+", " ", str(d.get("body") or ""))[:300]
+        comments = d.get("comments") or []
+        text = (
+            f"小黑盒《{d.get('title') or '无标题'}》 作者:{d.get('author') or '?'} "
+            f"赞{d.get('likes') or 0}"
+        )
+        if d.get("topics"):
+            text += " " + " ".join(d["topics"])
+        if body:
+            text += f" 正文:{body}"
+        if comments:
+            text += " 热评:" + " / ".join(
+                f"{c.get('user') or '匿名'}:{str(c.get('text') or '')[:40]}" for c in comments[:3]
+            )
+        return text + f" {d.get('url') or url}"
