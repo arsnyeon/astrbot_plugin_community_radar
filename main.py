@@ -29,6 +29,7 @@ from .douyin_duty import DouyinDuty
 from .douyin_feed import DouyinFeed
 from .heybox import HeyboxClient, HeyboxError
 from .link_peek import LinkPeek
+from .video_watch import VideoWatch
 
 
 def _fmt_time(ts: int) -> str:
@@ -41,7 +42,7 @@ def _fmt_time(ts: int) -> str:
     "astrbot_plugin_community_radar",
     "arsnyeon",
     "社区雷达：有自己兴趣的社区雷达，主动逛 B 站 / 抖音 / 小黑盒，按偏好搜索与点评，接得住你分享的链接。",
-    "v0.7.0",
+    "v0.9.0",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
@@ -59,6 +60,7 @@ class CommunityRadarPlugin(Star):
         self.douyin_duty = DouyinDuty(self, self.douyin_browser, self.douyin_cfg)
         self.douyin_duty.start()
         self.link_peek = LinkPeek(self)
+        self.video_watch = VideoWatch(self)
         self._peek_last: dict[str, float] = {}
         self._owner_warned = False
 
@@ -514,6 +516,23 @@ class CommunityRadarPlugin(Star):
             return
         yield event.plain_result("用法：/社区雷达（状态）\n/社区雷达 兴趣（看它现在想搜什么）")
 
+    @filter.command("看视频", alias={"b站看视频", "看懂"}, desc="让它看懂一条 B 站 / 抖音 / 小黑盒的内容")
+    async def watch_video_cmd(self, event: AstrMessageEvent, ref: GreedyStr):
+        ref = (ref or "").strip()
+        if not ref:
+            yield event.plain_result("用法：/看视频 BV号 或 视频/图文链接")
+            return
+        cfg = self.config.get("video") or {}
+        if not cfg.get("enable", True):
+            yield event.plain_result("视频理解没开启")
+            return
+        yield event.plain_result("我去看看这个…")
+        r = await self.video_watch.any(ref, cfg)
+        if not r.get("ok"):
+            yield event.plain_result(r.get("message") or "没看成")
+            return
+        yield event.plain_result(f"（走的{r.get('via')}）\n{r.get('digest')[:1500]}")
+
     # ── LLM 工具 ──────────────────────────────────────────────────
 
     @filter.llm_tool(name="bili_search")
@@ -660,6 +679,21 @@ class CommunityRadarPlugin(Star):
             return f"分享失败：{exc}"
         self._mark_shared()
         return "已经私聊分享给主人了"
+
+    @filter.llm_tool(name="radar_watch_video")
+    async def _t_watch_video(self, event: AstrMessageEvent, url: str) -> str:
+        """看懂一条社区内容（B 站 / 抖音 / 小黑盒的视频或图文），看完再回答用户。
+
+        Args:
+            url(string): 视频或图文链接，B 站可用 BV 号，抖音可用分享链接
+        """
+        cfg = self.config.get("video") or {}
+        if not cfg.get("enable", True):
+            return "视频理解没有开启"
+        r = await self.video_watch.any(url, cfg)
+        if not r.get("ok"):
+            return r.get("message") or "没看成这条内容"
+        return f"（已通过{r.get('via')}看完）\n{r.get('digest')}"
 
     # ── 抖音 LLM 工具 ────────────────────────────────────────────
 

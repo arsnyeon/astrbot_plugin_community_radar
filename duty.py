@@ -222,6 +222,16 @@ class BrowseDuty:
                     it["_body"] = str(v.get("desc") or "")[:400]
                     it["_stats"] = f"播放{v.get('play')} 点赞{v.get('like')}"
                     it["_link"] = f"https://www.bilibili.com/video/{v.get('bvid') or it['bvid']}"
+                    # 有字幕的话顺带读一眼，比简介信息量大得多
+                    try:
+                        sub = await self.plugin.bili.subtitles(
+                            str(v.get("bvid") or it["bvid"]), str(v.get("cid") or "")
+                        )
+                        if sub:
+                            it["_body"] = sub[:600]
+                            it["_via"] = (it.get("_via") or "") + "配字幕"
+                    except Exception:  # noqa: BLE001
+                        pass
                     try:
                         cs = await self.plugin.bili.comments(str(v.get("aid")), limit=4)
                         it["_comments"] = [f"{c['name']}：{c['text'][:60]}" for c in cs]

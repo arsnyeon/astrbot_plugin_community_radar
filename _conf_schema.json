@@ -246,5 +246,61 @@
         "default": 8
       }
     }
+  },
+  "video": {
+    "type": "object",
+    "description": "视频理解",
+    "hint": "有人发 B 站视频链接时，先把视频看懂再接话：优先读字幕，没字幕就抽帧描述画面。字幕接口需要登录态，建议在「B 站 Cookie」里填上。",
+    "items": {
+      "enable": {
+        "type": "bool",
+        "description": "启用视频理解",
+        "default": true
+      },
+      "max_transcript_chars": {
+        "type": "int",
+        "description": "字幕最大字符数",
+        "hint": "超长视频的字幕会截断到这个长度，避免撑爆上下文。",
+        "default": 3000
+      },
+      "use_frames": {
+        "type": "bool",
+        "description": "没字幕时抽帧描述画面",
+        "hint": "需要配置支持图片输入的模型；关掉则只看简介。",
+        "default": true
+      },
+      "frames": {
+        "type": "int",
+        "description": "抽几帧",
+        "hint": "2~4 帧通常够判断视频在讲什么，越多越慢。",
+        "default": 3
+      },
+      "provider_id": {
+        "type": "string",
+        "description": "画面描述用的模型",
+        "hint": "留空则使用当前会话的默认模型。",
+        "default": "",
+        "_special": "select_provider"
+      },
+      "audio_transcription": {
+        "type": "bool",
+        "description": "没字幕时转写音轨",
+        "hint": "把视频声音交给支持音频输入的模型转成文字，比只看画面更贴近原意。需要模型支持音频。",
+        "default": false
+      },
+      "audio_provider_id": {
+        "type": "string",
+        "description": "音轨转写用的模型",
+        "hint": "留空则用上面的画面描述模型。",
+        "default": "",
+        "_special": "select_provider"
+      },
+      "audio_seconds": {
+        "type": "int",
+        "description": "音轨最多转写多少秒",
+        "hint": "超长视频只转写开头这一段，避免输入过大。",
+        "default": 180
+      }
+    }
   }
 }

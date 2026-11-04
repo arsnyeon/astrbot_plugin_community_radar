@@ -273,6 +273,7 @@ class HeyboxClient:
                 "likes": int(x.get("link_award_num") or x.get("link_like_count") or x.get("like_num") or x.get("award_num") or x.get("likes") or 0),
                 "comments": int(x.get("comment_num") or x.get("comment_count") or 0),
                 "desc": re.sub(r"<[^>]+>", "", str(x.get("description") or x.get("desc") or ""))[:300],
+                "images": [u for u in (x.get("imgs") or []) if isinstance(u, str)][:5],
             })
         return out
 
@@ -328,6 +329,7 @@ class HeyboxClient:
                 "likes": int(x.get("link_award_num") or x.get("link_like_count") or x.get("like_num") or x.get("award_num") or x.get("likes") or 0),
                 "comments": int(x.get("comment_num") or x.get("comment_count") or 0),
                 "desc": re.sub(r"<[^>]+>", "", str(x.get("description") or x.get("desc") or ""))[:300],
+                "images": [u for u in (x.get("imgs") or []) if isinstance(u, str)][:5],
             })
         return out
 

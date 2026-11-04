@@ -253,3 +253,59 @@ class BiliClient:
                 "replies": r.get("rcount") or 0,
             })
         return out
+
+    # ── 视频理解：字幕 / 播放地址 ────────────────────────────────
+
+    async def subtitles(self, bvid: str, cid: str) -> str:
+        """拿视频字幕（CC）全文；没有字幕或需要登录时返回空串。"""
+        if not bvid or not cid:
+            return ""
+        url = await self._signed(
+            "https://api.bilibili.com/x/player/wbi/v2", {"bvid": bvid, "cid": cid}
+        )
+        d = await self._get(url) or {}
+        subs = ((d.get("subtitle") or {}).get("subtitles")) or []
+        if not subs:
+            return ""
+        pick = next(
+            (s for s in subs if "zh" in str(s.get("lan") or s.get("lan_doc")).lower()),
+            subs[0],
+        )
+        sub_url = str(pick.get("subtitle_url") or "")
+        if not sub_url:
+            return ""
+        if sub_url.startswith("//"):
+            sub_url = "https:" + sub_url
+        try:
+            r = await self._client.get(sub_url, headers={"User-Agent": UA})
+            body = (r.json() or {}).get("body") or []
+        except Exception:  # noqa: BLE001
+            return ""
+        text = " ".join(str(x.get("content") or "") for x in body if isinstance(x, dict))
+        return re.sub(r"\s+", " ", text).strip()
+
+    async def resolve_short(self, url: str) -> str:
+        """b23.tv 短链跟一次跳转，返回真实地址。"""
+        try:
+            r = await self._client.get(url, headers={"User-Agent": UA}, follow_redirects=True)
+            return str(r.url)
+        except Exception:  # noqa: BLE001
+            return ""
+
+    async def play_url(self, bvid: str, cid: str, aid: str = "", qn: int = 32) -> str:
+        """取一个可直接下载的视频流地址（优先渐进式 mp4，其次 DASH）。"""
+        if not cid:
+            return ""
+        params = {"bvid": bvid, "cid": cid, "qn": qn, "fnval": 1, "fnver": 0, "fourk": 1}
+        if aid:
+            params["avid"] = aid
+        url = await self._signed("https://api.bilibili.com/x/player/wbi/playurl", params)
+        d = await self._get(url) or {}
+        for item in (d.get("durl") or []):
+            u = str(item.get("url") or "")
+            if u:
+                return u
+        vids = ((d.get("dash") or {}).get("video")) or []
+        if vids:
+            return str(vids[0].get("baseUrl") or vids[0].get("base_url") or "")
+        return ""

@@ -3,7 +3,7 @@ display_name: 社区雷达
 short_desc: 有自己兴趣的社区雷达：主动逛 B 站 / 抖音 / 小黑盒，按偏好搜索与点评，接得住你分享的链接。
 desc: "社区雷达：让机器人有自己的兴趣与判断。按设定时间主动浏览 B 站、小黑盒、抖音，除热门外还会挑感兴趣的关键词去搜；点评由模型按自己的偏好决定聊什么、为什么在意，并记得之前看过什么；有人分享社区链接时会先看过内容再自然接话。另提供三平台的搜索、详情、评论、点赞、发帖与分享能力，抖音推荐流与站内私信分享可选启用，带额度与风控保护。"
 help: "命令：/b站搜索、/b站热门、/b站视频、/b站评论、/b站发评论、/b站点赞、/小黑盒、/小黑盒发帖、/抖音 帮助。LLM 工具：bili_*、heybox_*、douyin_*。定时浏览与链接接话在配置页设置。"
-version: v0.7.0
+version: v0.9.0
 author: arsnyeon
 repo: https://github.com/arsnyeon/astrbot_plugin_community_radar
 astrbot_version: ">=4.16,<5"

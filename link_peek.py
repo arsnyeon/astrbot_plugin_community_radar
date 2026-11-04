@@ -94,14 +94,28 @@ class LinkPeek:
             return ""
 
         lines: list[str] = []
+        video_cfg = self.plugin.config.get("video") or {}
+        fast_cfg = dict(video_cfg, use_frames=False, audio_transcription=False)
         for kind, url in found[:max_links]:
             cached = self._cache_get(url)
             if cached is None:
-                try:
-                    cached = await asyncio.wait_for(self._resolve(kind, url), timeout=7)
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug(f"[CommunityRadar] 链接解析失败 {url}: {exc}")
-                    cached = f"{self._label(kind)} {url}"
+                cached = ""
+                # 先用轻量方式「看懂」：字幕 / 文案 / 正文，不抽帧（避免拖慢回复）
+                if video_cfg.get("enable", True) and getattr(self.plugin, "video_watch", None):
+                    try:
+                        r = await asyncio.wait_for(
+                            self.plugin.video_watch.any(url, fast_cfg), timeout=15
+                        )
+                        if r.get("ok"):
+                            cached = f"{r.get('digest')}\n链接：{url}"
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(f"[CommunityRadar] 轻量理解失败 {url}: {exc}")
+                if not cached:
+                    try:
+                        cached = await asyncio.wait_for(self._resolve(kind, url), timeout=7)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(f"[CommunityRadar] 链接解析失败 {url}: {exc}")
+                        cached = f"{self._label(kind)} {url}"
                 self._cache_set(url, cached)
             lines.append("- " + cached)
 
@@ -125,6 +139,16 @@ class LinkPeek:
 
     async def _bili(self, url: str) -> str:
         from .bili import find_video_id
+
+        # 先尝试真正看懂视频（字幕优先，没字幕抽帧），失败再退回轻量信息
+        video_cfg = self.plugin.config.get("video") or {}
+        if video_cfg.get("enable", True) and getattr(self.plugin, "video_watch", None):
+            try:
+                r = await self.plugin.video_watch.bili(url, video_cfg)
+                if r.get("ok"):
+                    return f"{r.get('digest')}\n链接：{url}"
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"[CommunityRadar] 视频理解失败，退回轻量信息: {exc}")
 
         vid = find_video_id(url) or {}
         if "short" in vid:
