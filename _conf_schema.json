@@ -63,9 +63,10 @@
       },
       "ai_provider_id": {
         "type": "string",
-        "description": "点评用模型 provider",
-        "hint": "summary 模式下生成点评用的模型；留空用当前会话默认模型。",
-        "default": ""
+        "description": "点评用模型提供商",
+        "hint": "summary 模式下生成点评用的对话模型；留空则使用当前会话默认提供商。",
+        "default": "",
+        "_special": "select_provider"
       }
     }
   }
