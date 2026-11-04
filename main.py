@@ -39,7 +39,7 @@ def _fmt_time(ts: int) -> str:
     "astrbot_plugin_community_radar",
     "arsnyeon",
     "社区雷达：有自己兴趣的社区雷达，主动逛 B 站 / 抖音 / 小黑盒，按偏好搜索与点评，接得住你分享的链接。",
-    "v0.5.0",
+    "v0.6.0",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):

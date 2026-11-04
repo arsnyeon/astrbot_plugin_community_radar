@@ -80,11 +80,27 @@ B 站、小黑盒和抖音热榜**开箱可用**，不需要额外依赖或登�
   `COMMUNITY_RADAR_CDP_PORT`、`COMMUNITY_RADAR_DISPLAY`、`COMMUNITY_RADAR_BROWSER_PATH`
 - 请遵守各平台的用户协议，不要把插件用于批量采集或刷量
 
-## 卸载
+## 依赖与卸载
 
-在 WebUI 卸载插件时可勾选「删除配置」「删除数据」清理本插件的配置与登录状态。
-浏览器运行时属于运行环境，卸载插件不会自动移除，可参考 `uninstall_cleanup.sh`。
+浏览器运行时依赖由 `deps.py` 管理，原则是「**先查后装，只删自己装的**」：
 
-## 致谢
+| 情况 | 安装时 | 卸载时 |
+|---|---|---|
+| 装之前就已存在（可能别的程序在用） | 跳过安装，记为 `pre_existing` | **保留** |
+| 由本插件安装 | 安装，记为 `plugin` | 删除 |
 
-抖音互动部分参考了 [dsh-aurabot-qq](https://github.com/aureth-labs/dsh-aurabot-qq) 的设计思路。
+```bash
+# 查看依赖状态与归属
+docker exec -it astrbot python3 /AstrBot/data/plugins/astrbot_plugin_community_radar/deps.py status
+
+# 安装缺失依赖（幂等：已存在的跳过并标记）
+docker exec -it astrbot sh /AstrBot/data/plugins/astrbot_plugin_community_radar/install_browser.sh
+
+# 只卸载本插件装的（pre_existing 一律保留）
+docker exec -it astrbot sh /AstrBot/data/plugins/astrbot_plugin_community_radar/uninstall_cleanup.sh
+```
+
+- 清单写在 `data/plugin_data/astrbot_plugin_community_radar/deps_manifest.json`
+- `deps.py` 会自动复制一份到数据目录，所以**先卸载插件、再跑清理**也可以
+- 找不到清单时**不会删除任何依赖**，避免误伤其他程序
+- 在 WebUI 卸载插件时可勾选「删除配置」「删除数据」清理配置与登录状态
