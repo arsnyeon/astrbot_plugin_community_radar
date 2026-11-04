@@ -764,28 +764,160 @@ class DouyinBrowser:
 
     # ── 登录 / 窗口 ─────────────────────────────────────────────
 
-    async def login_qr(self) -> str:
-        """打开登录弹窗并截图，返回图片路径（由 main.py 发到 QQ）。"""
+    MODAL_PROBE = """() => {
+      let modal = null, best = 1e12;
+      for (const n of document.querySelectorAll('div,section')) {
+        const t = n.innerText || '';
+        if (!t.includes('扫码登录')) continue;
+        const r = n.getBoundingClientRect();
+        const area = r.width * r.height;
+        if (area > 20000 && area < best) { best = area; modal = n; }
+      }
+      return Boolean(modal);
+    }"""
+
+    QR_PROBE = """() => {
+      const vis = (n) => { const r = n.getBoundingClientRect();
+        return r.width > 80 && r.height > 80; };
+      let modal = null, best = 1e12;
+      for (const n of document.querySelectorAll('div,section')) {
+        const t = n.innerText || '';
+        if (!t.includes('扫码登录')) continue;
+        const r = n.getBoundingClientRect();
+        const area = r.width * r.height;
+        if (area > 20000 && area < best) { best = area; modal = n; }
+      }
+      const scope = modal || document.body;
+      for (const n of scope.querySelectorAll('img, canvas')) {
+        if (!vis(n)) continue;
+        if (n.tagName === 'IMG' && (n.naturalWidth || 0) >= 100) return true;
+        if (n.tagName === 'CANVAS' && n.width >= 100) return true;
+      }
+      return false;
+    }"""
+
+    MODAL_BOX = """() => {
+      let modal = null, best = 1e12;
+      for (const n of document.querySelectorAll('div,section')) {
+        const t = n.innerText || '';
+        if (!t.includes('扫码登录')) continue;
+        const r = n.getBoundingClientRect();
+        const area = r.width * r.height;
+        if (area > 20000 && area < best) { best = area; modal = n; }
+      }
+      if (!modal) return null;
+      const r = modal.getBoundingClientRect();
+      return {x: Math.max(0, r.x), y: Math.max(0, r.y),
+              width: Math.min(r.width, 1280), height: Math.min(r.height, 860)};
+    }"""
+
+    async def login_qr(self) -> dict:
+        """打开扫码登录框并截图。
+
+        返回 {"ok": bool, "path": 截图路径, "reason": 失败原因}。
+        只有真的看到二维码才返回成功，避免把首页/占位图当二维码发出去。
+        """
         await self.ensure()
-        await self._page.goto(HOME, wait_until="domcontentloaded", timeout=20000)
+        page = self._page
+        await page.goto(HOME, wait_until="domcontentloaded", timeout=20000)
         await asyncio.sleep(2)
-        for sel in (
-            '[data-e2e="top-login-button"]',
-            '//*[contains(text(),"登录")]',
-            ".login-button",
-        ):
+
+        async def has_modal() -> bool:
             try:
-                loc = self._page.locator(sel).first
-                if await loc.count():
-                    await loc.click(timeout=3000)
-                    break
+                return bool(await page.evaluate(self.MODAL_PROBE))
             except Exception:  # noqa: BLE001
-                continue
-        await asyncio.sleep(2)
+                return False
+
+        async def has_qr() -> bool:
+            try:
+                return bool(await page.evaluate(self.QR_PROBE))
+            except Exception:  # noqa: BLE001
+                return False
+
+        # 1) 没有登录框就点「登录」
+        if not await has_modal():
+            clicked = False
+            for sel in (
+                '[data-e2e="top-login-button"]',
+                'xpath=//*[normalize-space(text())="登录"]',
+                'xpath=//button[contains(.,"登录")]',
+                ".login-button",
+                '[data-e2e="login-button"]',
+            ):
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.count() and await loc.is_visible():
+                        await loc.click(timeout=3000)
+                        clicked = True
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+            if not clicked:
+                clicked = bool(await page.evaluate("""() => {
+                    const nodes = [...document.querySelectorAll('button,div,span,a')]
+                      .filter((n) => (n.innerText || '').trim() === '登录')
+                      .filter((n) => { const r = n.getBoundingClientRect();
+                        return r.width > 10 && r.height > 10 && r.top < 200; });
+                    if (!nodes.length) return false;
+                    nodes[0].click();
+                    return true;
+                }"""))
+
+        # 2) 等登录框出现
+        for _ in range(20):
+            if await has_modal():
+                break
+            await asyncio.sleep(0.5)
+
+        # 3) 等二维码真正加载出来；没出来就点一下刷新再等
+        qr_ready = False
+        for attempt in range(2):
+            for _ in range(24):
+                if await has_qr():
+                    qr_ready = True
+                    break
+                await asyncio.sleep(0.5)
+            if qr_ready:
+                break
+            # 尝试点“刷新”或二维码区域，让二维码重新加载
+            try:
+                await page.evaluate("""() => {
+                    const btn = [...document.querySelectorAll('div,span,button')]
+                      .find((n) => /刷新|重新获取|点击刷新/.test((n.innerText || '').trim()));
+                    if (btn) { btn.click(); return; }
+                    const q = [...document.querySelectorAll('[class*="qrcode"], canvas, img')]
+                      .find((n) => { const r = n.getBoundingClientRect();
+                        return r.width > 100 && r.height > 100; });
+                    if (q) q.click();
+                }""")
+            except Exception:  # noqa: BLE001
+                pass
+            await asyncio.sleep(3)
+
+        # 4) 截图（优先只截登录框）
         Path(self.data_dir).mkdir(parents=True, exist_ok=True)
         path = str(Path(self.data_dir) / "douyin_login_qr.png")
-        await self._page.screenshot(path=path, full_page=False)
-        return path
+        box = None
+        try:
+            box = await page.evaluate(self.MODAL_BOX)
+        except Exception:  # noqa: BLE001
+            box = None
+        if box and box.get("width", 0) > 120 and box.get("height", 0) > 120:
+            try:
+                await page.screenshot(path=path, clip=box)
+            except Exception:  # noqa: BLE001
+                await page.screenshot(path=path, full_page=False)
+        else:
+            await page.screenshot(path=path, full_page=False)
+
+        if not qr_ready:
+            return {
+                "ok": False,
+                "path": path,
+                "reason": "登录框打开了，但二维码没加载出来（网络慢或被风控）。过一会儿再 /抖音 登录 试试，"
+                          "或者 /抖音 关 之后重来。",
+            }
+        return {"ok": True, "path": path, "reason": ""}
 
     async def show(self, visible: bool) -> None:
         await self.ensure()

@@ -43,7 +43,7 @@ def _fmt_time(ts: int) -> str:
     "astrbot_plugin_community_radar",
     "arsnyeon",
     "社区雷达：自己决定什么时候逛 B 站 / 抖音 / 小黑盒，看得懂视频与图文，会点赞评论回复，也接得住你分享的链接。",
-    "v0.12.1",
+    "v0.12.2",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
@@ -516,12 +516,17 @@ class CommunityRadarPlugin(Star):
 
         if sub in ("登录", "login", "扫码"):
             try:
-                path = await self.douyin_browser.login_qr()
+                info = await self.douyin_browser.login_qr()
             except Exception as exc:  # noqa: BLE001
                 yield event.plain_result(f"打开登录页失败：{exc}")
                 return
-            for r in await self._qr_result(event, path, "用抖音 App 扫码登录（建议小号）。扫完发 /抖音 状态 确认。"):
-                yield r
+            if not info.get("ok"):
+                yield event.plain_result(info.get("reason") or "没能打开扫码登录框")
+                return
+            for item in await self._qr_result(
+                event, info["path"], "用抖音 App 扫码登录（建议小号）。扫完发 /抖音 状态 确认。"
+            ):
+                yield item
             return
 
         if sub in ("关", "close", "stop"):
