@@ -1,1 +1,4 @@
 httpx
+# playwright 是「抖音写层」的可选依赖，由 install_browser.sh 单独安装：
+# 它只用于 connect_over_cdp，且装进容器全局环境，写进 requirements.txt
+# 会让只想要热榜功能的人也被迫安装。读层（douyin_feed.py）不依赖它。

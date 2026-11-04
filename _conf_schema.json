@@ -1,72 +1,220 @@
 {
+  "admin_uin": {
+    "type": "string",
+    "description": "主人账号",
+    "hint": "定时推送与互动操作的默认对象。建议填写你的 QQ 号；留空且未填「推送目标」时不会主动推送。",
+    "default": ""
+  },
   "bili_cookie": {
     "type": "text",
-    "description": "B 站 Cookie（可选）",
-    "hint": "只做看类操作（搜索/热门/视频/评论）无需 Cookie。若要发评论、点赞，粘贴含 SESSDATA 和 bili_jct 的完整 Cookie。",
+    "description": "B 站 Cookie",
+    "hint": "仅浏览、搜索、看评论时不需要填写。需要发评论或点赞时，粘贴包含 SESSDATA 与 bili_jct 的完整 Cookie。",
     "default": ""
   },
   "heybox_cookie": {
     "type": "text",
-    "description": "小黑盒 Cookie（可选）",
-    "hint": "信息流和搜索无需 Cookie；写操作（评论/发帖）需要含 pkey 与 x_xhh_tokenid 的完整 Cookie。",
+    "description": "小黑盒 Cookie",
+    "hint": "仅浏览信息流与搜索时不需要填写。需要评论、点赞或发帖时，粘贴包含 pkey 与 x_xhh_tokenid 的完整 Cookie。",
     "default": ""
-  },
-  "admin_uin": {
-    "type": "string",
-    "description": "主人 QQ 号",
-    "hint": "定时浏览未配置 targets 时，私聊推送给这个 QQ 号。",
-    "default": "2659055656"
   },
   "browse": {
     "type": "object",
     "description": "定时浏览",
+    "hint": "让她按自己的兴趣定时逛社区，并把看到的内容聊给你听。",
     "items": {
       "enable": {
         "type": "bool",
-        "description": "开启定时浏览",
+        "description": "启用定时浏览",
+        "hint": "开启后按下面的时间点自动逛社区并推送；关闭时仍可手动使用命令。",
         "default": false
       },
       "times": {
         "type": "list",
-        "description": "每天触发时间点",
-        "hint": "HH:MM 格式，可多个。例如 [\"12:30\", \"21:00\"] 表示每天这两个时间各刷一次。",
+        "description": "每天浏览时间",
+        "hint": "24 小时制 HH:MM，可填多个。例如 [\"12:30\", \"21:00\"] 表示每天各浏览一次。",
         "default": ["12:30", "21:00"]
       },
       "platforms": {
         "type": "string",
-        "description": "浏览平台",
-        "hint": "可选 bili / heybox / both。",
-        "default": "both"
+        "description": "浏览哪些社区",
+        "hint": "bili = B 站，heybox = 小黑盒，douyin = 抖音热榜，both = B 站 + 小黑盒，all = 三者都要。",
+        "default": "all"
+      },
+      "interests": {
+        "type": "list",
+        "description": "感兴趣的关键词",
+        "hint": "她会从中挑关键词主动搜索，而不只是被动看热门。例如 [\"独立游戏\", \"人工智能\", \"猫\"]。留空则只看热门。",
+        "default": []
+      },
+      "search_per_run": {
+        "type": "int",
+        "description": "每次搜索几个关键词",
+        "hint": "每次定时浏览随机挑选的兴趣词数量，0 表示只按兴趣筛选热门、不额外搜索。",
+        "default": 2
+      },
+      "persona": {
+        "type": "text",
+        "description": "浏览时的口吻",
+        "hint": "一句话说明她的性格与说话方式，用于生成点评与选择感兴趣的内容。留空则使用默认的中立、有个人偏好的口吻。",
+        "default": ""
       },
       "mode": {
         "type": "string",
         "description": "推送形式",
-        "hint": "links = 只发标题和链接；summary = 让模型挑几条写点评后发送。",
+        "hint": "links = 只发标题与链接；summary = 由模型按自己的偏好挑几条聊聊再发。",
         "default": "summary"
       },
       "count": {
         "type": "int",
-        "description": "每个平台抓取条数",
+        "description": "每个社区取几条",
+        "hint": "单次浏览每个社区最多纳入多少条内容。",
         "default": 5
       },
       "quiet_hours": {
         "type": "string",
-        "description": "静默时段",
-        "hint": "例如 1-6 表示凌晨 1 点到 6 点不推送。",
+        "description": "免打扰时段",
+        "hint": "这段时间内不推送。例如 1-6 表示凌晨 1 点到 6 点；留空表示全天可推送。",
         "default": "1-6"
       },
       "targets": {
         "type": "list",
-        "description": "推送目标 UMO 列表",
-        "hint": "留空则私聊 admin_uin；否则填完整 UMO，例如 渡可:FriendMessage:2659055656 或 渡可:GroupMessage:群号。",
+        "description": "推送目标",
+        "hint": "填写完整会话标识（UMO），例如 平台名:FriendMessage:QQ号 或 平台名:GroupMessage:群号。留空则私聊「主人账号」。",
         "default": []
       },
       "ai_provider_id": {
         "type": "string",
-        "description": "点评用模型提供商",
-        "hint": "summary 模式下生成点评用的对话模型；留空则使用当前会话默认提供商。",
+        "description": "点评使用的模型",
+        "hint": "留空则使用当前会话的默认对话模型。",
         "default": "",
         "_special": "select_provider"
+      }
+    }
+  },
+  "link_peek": {
+    "type": "object",
+    "description": "分享链接接话",
+    "hint": "有人发社区链接时，先替她看一眼内容，再让她接着聊，而不是只回一句「收到」。",
+    "items": {
+      "enable": {
+        "type": "bool",
+        "description": "启用链接接话",
+        "hint": "开启后会把链接内容加入本轮对话上下文，不会额外发送消息，也不打断正常聊天。",
+        "default": true
+      },
+      "platforms": {
+        "type": "string",
+        "description": "识别哪些平台",
+        "hint": "all = 全部，或按需填写 bili / douyin / heybox。",
+        "default": "all"
+      },
+      "cooldown_sec": {
+        "type": "int",
+        "description": "同一会话冷却时间（秒）",
+        "hint": "短时间内重复出现相同或不同链接时，避免反复解析。",
+        "default": 30
+      },
+      "max_links": {
+        "type": "int",
+        "description": "单条消息最多解析几个链接",
+        "hint": "防止一次转发大量链接导致请求过多。",
+        "default": 2
+      }
+    }
+  },
+  "douyin": {
+    "type": "object",
+    "description": "抖音",
+    "hint": "热榜与链接接话开箱可用；推荐流、点赞、评论、站内分享需要按需启用浏览器。登录状态会自动保存，无需手动设置路径。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用推荐流与互动",
+        "hint": "关闭时热榜与链接接话仍可用；开启后可刷推荐流、点赞、评论、分享。首次使用需安装浏览器运行时并扫码登录。",
+        "default": false
+      },
+      "dry_run": {
+        "type": "bool",
+        "description": "试运行",
+        "hint": "开启时只记录、不真的点赞或评论，也不会真的发站内私信。建议先观察几天再关闭。",
+        "default": true
+      },
+      "auto_browse": {
+        "type": "bool",
+        "description": "定时刷推荐流",
+        "hint": "开启后按间隔自动浏览；关闭时只在手动触发时运行。运行期间会额外占用内存。",
+        "default": false
+      },
+      "interval_hours": {
+        "type": "float",
+        "description": "自动浏览间隔（小时）",
+        "hint": "两次自动浏览之间的大致间隔，实际会加入少量随机浮动。",
+        "default": 4.0
+      },
+      "close_after_run": {
+        "type": "bool",
+        "description": "结束后关闭浏览器",
+        "hint": "关闭后释放资源，登录状态仍会保留。建议在资源有限的环境保持开启。",
+        "default": true
+      },
+      "owner_input": {
+        "type": "string",
+        "description": "主人的抖音号",
+        "hint": "可填抖音号或主页链接。填写后需执行 /抖音 核对主人 完成身份核对；改动此项必须重新核对。留空则只通过聊天平台分享。",
+        "default": ""
+      },
+      "share_to": {
+        "type": "string",
+        "description": "分享渠道",
+        "hint": "qq = 只发到聊天平台，douyin = 只发抖音私信视频卡片，both = 两边都发。站内分享失败时自动回退到聊天平台。",
+        "default": "qq"
+      },
+      "max_watch_per_day": {
+        "type": "int",
+        "description": "每天最多浏览视频数",
+        "hint": "控制自动浏览的规模，避免过度请求。",
+        "default": 20
+      },
+      "max_writes_per_day": {
+        "type": "int",
+        "description": "每天最多互动次数",
+        "hint": "点赞、评论、分享、私信合计上限。",
+        "default": 15
+      },
+      "min_write_gap_sec": {
+        "type": "int",
+        "description": "两次互动最小间隔（秒）",
+        "hint": "相邻互动之间至少等待的时间，模拟正常浏览节奏。",
+        "default": 90
+      },
+      "new_account_days": {
+        "type": "int",
+        "description": "新号保护期（天）",
+        "hint": "登录后的这段时间内，所有互动上限减半；填 0 关闭。",
+        "default": 7
+      },
+      "caps": {
+        "type": "object",
+        "description": "每日互动上限",
+        "hint": "分别限制每类互动的次数。",
+        "items": {
+          "like": { "type": "int", "description": "每天最多点赞", "default": 10 },
+          "comment": { "type": "int", "description": "每天最多评论", "default": 5 },
+          "share": { "type": "int", "description": "每天最多分享", "default": 3 }
+        }
+      },
+      "ai_provider_id": {
+        "type": "string",
+        "description": "浏览时使用的模型",
+        "hint": "用于判断要不要点赞、评论、分享。留空则使用当前会话的默认模型。",
+        "default": "",
+        "_special": "select_provider"
+      },
+      "targets": {
+        "type": "list",
+        "description": "推送目标",
+        "hint": "填写完整会话标识（UMO）。留空则私聊「主人账号」。",
+        "default": []
       }
     }
   }
