@@ -278,6 +278,7 @@ class DouyinBrowser:
             self._xvfb_proc = subprocess.Popen(
                 [xvfb, self.display, "-screen", "0", "1280x860x24", "-nolisten", "tcp"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
+                start_new_session=True,
             )
             for _ in range(40):
                 if sock.exists():
@@ -330,15 +331,50 @@ class DouyinBrowser:
         self._browser = self._pw = self._page = None
         for proc in (self._chrome_proc, self._xvfb_proc):
             if proc and proc.poll() is None:
-                try:
-                    proc.terminate()
-                except Exception:  # noqa: BLE001
-                    pass
+                self._stop_proc(proc)
         self._chrome_proc = self._xvfb_proc = None
         try:
             await self._probe_client.aclose()
         except Exception:  # noqa: BLE001
             pass
+
+    @staticmethod
+    def _stop_proc(proc: subprocess.Popen) -> None:
+        """结束子进程并回收，避免留下僵尸（terminate 后不 wait 会变 defunct）。
+
+        只有子进程自己是进程组组长时才杀整组（否则会连带杀掉 AstrBot 自身）。
+        """
+        import os
+        import signal
+
+        try:
+            pgid = os.getpgid(proc.pid)
+        except Exception:  # noqa: BLE001
+            pgid = -1
+        try:
+            if pgid == proc.pid:
+                os.killpg(pgid, signal.SIGTERM)
+            else:
+                proc.terminate()
+        except Exception:  # noqa: BLE001
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            try:
+                if pgid == proc.pid:
+                    os.killpg(pgid, signal.SIGKILL)
+                else:
+                    proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                proc.wait(timeout=3)
+            except Exception:  # noqa: BLE001
+                pass
 
     # ── 页面内接口 ──────────────────────────────────────────────
 
@@ -400,6 +436,85 @@ class DouyinBrowser:
         })
         return parse_comments(p)
 
+    async def grab_frames(self, vid: str, count: int = 3) -> list[str]:
+        """在真实播放器上按时间点截图，返回若干帧的本地路径。
+
+        直接截 `<video>` 元素的画面，不依赖分享页 SSR，也不下载整段视频。
+        """
+        import os
+        import tempfile
+
+        await self.open_video(vid, 0)
+        page = self._page
+
+        info = None
+        for _ in range(10):
+            try:
+                info = await page.evaluate(self.MAIN_VIDEO_JS)
+            except Exception:  # noqa: BLE001
+                info = None
+            if info and info.get("duration"):
+                break
+            await asyncio.sleep(0.6)
+        if not info or not info.get("width") or not info.get("vw"):
+            return []
+
+        dur = float(info.get("duration") or 0)
+        count = max(1, min(int(count), 5))
+        width = min(float(info["width"]), 1280)
+        height = min(float(info["height"]), 860)
+        box = {"x": max(0.0, float(info["x"])), "y": max(0.0, float(info["y"])),
+               "width": max(100.0, width), "height": max(100.0, height)}
+
+        out: list[str] = []
+        hashes: list[str] = []
+        for i in range(count):
+            if dur > 3:
+                t = dur * (0.12 + 0.72 * i / max(1, count - 1 if count > 1 else 1))
+            else:
+                t = 0.4 + i
+            try:
+                await page.evaluate(self.SEEK_MAIN_JS, t)
+                await asyncio.sleep(0.9)
+                fd, path = tempfile.mkstemp(suffix=".jpg", prefix="radar_dyframe_")
+                os.close(fd)
+                await page.screenshot(path=path, clip=box, type="jpeg", quality=70)
+            except Exception:  # noqa: BLE001
+                continue
+            try:
+                if os.path.getsize(path) < 3000:
+                    os.unlink(path)
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            h = self._frame_hash(path)
+            if h and any(self._hash_dist(h, other) < 5 for other in hashes):
+                try:
+                    os.unlink(path)
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+            hashes.append(h)
+            out.append(path)
+        return out
+
+    @staticmethod
+    def _frame_hash(path: str) -> str:
+        try:
+            from PIL import Image
+
+            with Image.open(path) as im:
+                small = im.convert("L").resize((8, 8))
+                px = list(small.getdata())
+            avg = sum(px) / len(px)
+            return "".join("1" if p > avg else "0" for p in px)
+        except Exception:  # noqa: BLE001
+            return ""
+
+    @staticmethod
+    def _hash_dist(a: str, b: str) -> int:
+        return sum(1 for x, y in zip(a, b) if x != y)
+
     async def verify(self) -> str:
         """每次现查验证码，不留标记。"""
         try:
@@ -413,30 +528,95 @@ class DouyinBrowser:
     def _scope(vid: str) -> str:
         return f'[data-e2e="feed-active-video"][data-e2e-vid="{vid}"]'
 
+    MAIN_VIDEO_JS = """() => {
+      const list = [...document.querySelectorAll('video')].map((v) => {
+        const r = v.getBoundingClientRect();
+        return {x: r.x, y: r.y, width: r.width, height: r.height,
+                area: r.width * r.height, duration: Number(v.duration) || 0,
+                vw: v.videoWidth || 0, paused: v.paused, rs: v.readyState};
+      }).filter((o) => o.width > 200 && o.height > 120);
+      list.sort((a, b) => b.area - a.area);
+      return list[0] || null;
+    }"""
+
+    DISMISS_JS = """() => {
+      const want = ['我知道了', '知道了', '跳过', '关闭'];
+      let hit = false;
+      for (const n of document.querySelectorAll('button,div,span,a')) {
+        const t = (n.innerText || '').trim();
+        if (!want.includes(t)) continue;
+        const r = n.getBoundingClientRect();
+        if (r.width < 10 || r.height < 10) continue;
+        n.click();
+        hit = true;
+      }
+      return hit;
+    }"""
+
+    PLAY_MAIN_JS = """() => {
+      const vs = [...document.querySelectorAll('video')].sort((a, b) => {
+        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+        return (rb.width * rb.height) - (ra.width * ra.height);
+      });
+      const v = vs[0];
+      if (!v) return false;
+      v.muted = true;
+      if (v.play) v.play().catch(() => {});
+      return true;
+    }"""
+
+    SEEK_MAIN_JS = """(t) => {
+      const vs = [...document.querySelectorAll('video')].sort((a, b) => {
+        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+        return (rb.width * rb.height) - (ra.width * ra.height);
+      });
+      const v = vs[0];
+      if (!v) return false;
+      v.muted = true;
+      try { v.currentTime = t; } catch (e) {}
+      if (v.play) v.play().catch(() => {});
+      return true;
+    }"""
+
     async def open_video(self, vid: str, dwell_ms: int = 3000) -> None:
+        """打开指定视频并（可选）播放一会儿。
+
+        抖音前端换过 DOM 结构，`data-e2e-vid` 这类属性已经不可靠了，
+        这里改成「跳到 modal 页 → 关掉引导浮层 → 找页面上最大的 <video>」。
+        """
         if not re.fullmatch(r"\d{15,}", str(vid)):
             raise BrowserError("视频 id 不对")
         await self.ensure()
+        page = self._page
+        try:
+            cur = str(await page.evaluate("location.href") or "")
+        except Exception:  # noqa: BLE001
+            cur = ""
+        if str(vid) not in cur:
+            await page.goto(f"{HOME}jingxuan?modal_id={vid}", wait_until="domcontentloaded", timeout=25000)
+            await asyncio.sleep(2.0)
+
         why = await self.verify()
         if why:
             raise BrowserError("要验证：" + why, "verify")
-        scope = self._scope(vid)
-        has = await self._page.evaluate("(s) => Boolean(document.querySelector(s))", scope)
-        if not has:
-            await self._page.goto(f"{HOME}jingxuan?modal_id={vid}", wait_until="domcontentloaded", timeout=20000)
-            why = await self.verify()
-            if why:
-                raise BrowserError("要验证：" + why, "verify")
+
+        box = None
+        for attempt in range(20):
             try:
-                await self._page.wait_for_selector(scope, timeout=12000)
+                if attempt in (1, 3, 6):
+                    # 引导浮层（「滚动鼠标查看更多」「我知道了」）会挡住播放
+                    await page.evaluate(self.DISMISS_JS)
+                await page.evaluate(self.PLAY_MAIN_JS)
+                box = await page.evaluate(self.MAIN_VIDEO_JS)
             except Exception:  # noqa: BLE001
-                raise BrowserError("视频没打开（可能删了或者是私密的）")
+                box = None
+            if box and box.get("width", 0) > 200:
+                break
+            await asyncio.sleep(0.7)
+        if not box:
+            raise BrowserError("视频没打开（可能删了、要登录，或者被浮层挡住）")
+
         if dwell_ms > 0:
-            await self._page.evaluate("""(s) => {
-                document.querySelectorAll(s + ' video').forEach((v) => {
-                    v.muted = true; if (v.play) v.play().catch(() => {});
-                });
-            }""", scope)
             await asyncio.sleep(dwell_ms / 1000.0)
 
     async def _check_write(self, resp, what: str) -> dict:
@@ -810,6 +990,18 @@ class DouyinBrowser:
       return {x: Math.max(0, r.x), y: Math.max(0, r.y),
               width: Math.min(r.width, 1280), height: Math.min(r.height, 860)};
     }"""
+
+    async def screenshot(self) -> dict:
+        """截一张当前页面，返回 {ok, path, url}。"""
+        await self.ensure()
+        Path(self.data_dir).mkdir(parents=True, exist_ok=True)
+        path = str(Path(self.data_dir) / "douyin_current.png")
+        await self._page.screenshot(path=path, full_page=False)
+        try:
+            url = str(await self._page.evaluate("location.href") or "")
+        except Exception:  # noqa: BLE001
+            url = ""
+        return {"ok": True, "path": path, "url": url}
 
     async def login_qr(self) -> dict:
         """打开扫码登录框并截图。

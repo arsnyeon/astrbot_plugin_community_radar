@@ -225,7 +225,9 @@ class DouyinDuty:
             return
         if not due and self.s.get("last_run") and time.time() - self.s["last_run"] < float(self.cfg.get("interval_hours") or 4) * 3600:
             return
-        await self.browse()
+        r = await self.browse()
+        if r.get("ok") and r.get("message"):
+            await self._send(r["message"])
 
     # ── 主流程 ──────────────────────────────────────────────────
 
@@ -296,7 +298,7 @@ class DouyinDuty:
 
         decisions = await self._decide(digests, owner_asked)
         liked = commented = shared = 0
-        shared_list: list[str] = []
+        shared_bodies: list[str] = []
         for idx, d in enumerate(looked):
             dec = decisions[idx] if idx < len(decisions) and isinstance(decisions[idx], dict) else {}
             dry = bool(self.cfg.get("dry_run", True))
@@ -335,13 +337,16 @@ class DouyinDuty:
                             break
             share_text = _clip(dec.get("share"), 120)
             if share_text and self._left("share") > 0 and not self._paused():
-                r = await self._share(d, share_text)
+                # 真要发给主人的那条，先用画面/文案真看一遍再写
+                digest = await self._deep_watch(d)
+                r = await self._share(d, share_text, digest)
                 if r.get("ok"):
                     self.s["share"] = int(self.s.get("share", 0)) + 1
                     self._record("share", aweme_id=d["aweme_id"], title=d["title"],
                                  text=share_text, via=r.get("via", []))
                     shared += 1
-                    shared_list.append(f"{d['title']}（{'/'.join(r.get('via', []))}）")
+                    if r.get("body"):
+                        shared_bodies.append(r["body"])
                 else:
                     logger.warning("[CommunityRadar] 这条视频没分享出去")
 
@@ -349,9 +354,8 @@ class DouyinDuty:
         head = f"刚刷了会儿抖音，看了 {len(looked)} 个视频"
         if self.cfg.get("dry_run", True):
             head += "（试运行，没真点赞评论）"
-        if shared_list:
-            head += "，有几个想发给你：" + "、".join(shared_list[:3])
-        await self._send(head)
+        if shared_bodies:
+            head += "\n\n" + "\n\n".join(shared_bodies[:2])
         return {"ok": True, "message": head, "watched": len(looked), "liked": liked,
                 "commented": commented, "shared": shared, "titles": [v["title"] for v in looked]}
 
@@ -429,10 +433,51 @@ class DouyinDuty:
 
     # ── 分享（抖音站内私信 / QQ / 两边）──────────────────────────
 
-    async def _share(self, v: dict, text: str) -> dict:
+    async def _deep_watch(self, v: dict) -> str:
+        """真看一遍：优先截真实播放器画面交给视觉模型，SSR 只作兜底。"""
+        vw = getattr(self.plugin, "video_watch", None)
+        cfg = self.plugin.config.get("video") or {}
+        if vw is None or not cfg.get("enable", True):
+            return ""
+
+        frames: list[str] = []
+        try:
+            frames = await self.b.grab_frames(str(v.get("aweme_id") or ""), int(cfg.get("frames") or 3))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[CommunityRadar] 抖音截帧失败: {exc}")
+        if frames:
+            try:
+                caption = await vw._caption(frames, cfg)
+                if caption:
+                    return f"（画面）{caption[:500]}"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[CommunityRadar] 抖音画面描述失败: {exc}")
+            finally:
+                import os
+
+                for f in frames:
+                    try:
+                        os.unlink(f)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+        url = str(v.get("url") or "")
+        if url:
+            try:
+                r = await vw.douyin(url, cfg)
+                if r.get("ok"):
+                    digest = str(r.get("digest") or "").strip()
+                    if digest:
+                        return f"（{r.get('via')}）{digest[:500]}"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[CommunityRadar] 抖音 SSR 兜底失败: {exc}")
+        return ""
+
+    async def _share(self, v: dict, text: str, digest: str = "") -> dict:
         """把视频分享给主人。按 share_to 走抖音站内私信、QQ，或两边都发。
 
-        抖音那边没核对主人 / 发不出去时回退 QQ，免得白看。返回 {ok, via}。
+        QQ 侧不再自己发消息，而是把成稿放进返回值，由调用方统一发一条，
+        避免「刷完了」和分享内容重复推送。返回 {ok, via, body}。
         """
         mode = str(self.cfg.get("share_to") or "qq").lower()
         via: list[str] = []
@@ -475,11 +520,13 @@ class DouyinDuty:
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(f"[CommunityRadar] 抖音里分享异常: {exc}")
 
+        body = f"《{v['title']}》\n{text}"
+        if digest:
+            body += f"\n{digest}"
+        body += f"\n{v['url']}"
         if mode in ("qq", "both") or not via:
-            body = f"刷到个有意思的：《{v['title']}》\n{text}\n{v['url']}"
-            await self._send(body)
             via.append("qq")
-        return {"ok": bool(via), "via": via}
+        return {"ok": bool(via), "via": via, "body": body}
 
     async def share_video(self, link: str, text: str = "") -> dict:
         """主人明确要求分享某条视频：按 share_to 分发，计入当日份额额。"""
@@ -491,7 +538,8 @@ class DouyinDuty:
             return {"ok": False, "message": why}
         try:
             v = await self.b.detail(vid)
-            r = await self._share(v, _clip(text, 120) or "这个给你看看")
+            digest = await self._deep_watch(v)
+            r = await self._share(v, _clip(text, 120) or "这个给你看看", digest)
         except BrowserError as exc:
             self._on_error(exc)
             return {"ok": False, "message": str(exc)}
@@ -507,7 +555,12 @@ class DouyinDuty:
             self.s["share"] = int(self.s.get("share", 0)) + 1
             self._record("share", aweme_id=vid, title=v.get("title", ""), via=r["via"])
             self._save()
-        return {"ok": bool(r.get("ok")), "message": "已分享（" + " / ".join(r.get("via", [])) + "）" if r.get("ok") else "没分享出去", "via": r.get("via", [])}
+        ok = bool(r.get("ok"))
+        msg = ("已分享（" + " / ".join(r.get("via", [])) + "）") if ok else "没分享出去"
+        body = str(r.get("body") or "")
+        if ok and body and "qq" in (r.get("via") or []):
+            msg += "\n\n" + body
+        return {"ok": ok, "message": msg, "via": r.get("via", [])}
 
     async def send_dm(self, text: str) -> dict:
         """主人在 QQ 里明确要求时，在抖音私信里给核对过的主人发一句话。"""

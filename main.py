@@ -43,7 +43,7 @@ def _fmt_time(ts: int) -> str:
     "astrbot_plugin_community_radar",
     "arsnyeon",
     "社区雷达：自己决定什么时候逛 B 站 / 抖音 / 小黑盒，看得懂视频与图文，会点赞评论回复，也接得住你分享的链接。",
-    "v0.12.2",
+    "v0.12.3",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
@@ -526,6 +526,18 @@ class CommunityRadarPlugin(Star):
             for item in await self._qr_result(
                 event, info["path"], "用抖音 App 扫码登录（建议小号）。扫完发 /抖音 状态 确认。"
             ):
+                yield item
+            return
+
+        if sub in ("截图", "screenshot", "看看"):
+            try:
+                info = await self.douyin_browser.screenshot()
+            except Exception as exc:  # noqa: BLE001
+                yield event.plain_result(f"截图失败：{exc}")
+                return
+            if info.get("url"):
+                yield event.plain_result(f"它现在在这个页面：{info['url']}")
+            for item in await self._qr_result(event, info["path"], "这是它当前看到的画面"):
                 yield item
             return
 
