@@ -1,12 +1,12 @@
 {
   "bili_cookie": {
-    "type": "string",
+    "type": "text",
     "description": "B 站 Cookie（可选）",
     "hint": "只做看类操作（搜索/热门/视频/评论）无需 Cookie。若要发评论、点赞，粘贴含 SESSDATA 和 bili_jct 的完整 Cookie。",
     "default": ""
   },
   "heybox_cookie": {
-    "type": "string",
+    "type": "text",
     "description": "小黑盒 Cookie（可选）",
     "hint": "信息流和搜索无需 Cookie；写操作（评论/发帖）需要含 pkey 与 x_xhh_tokenid 的完整 Cookie。",
     "default": ""
