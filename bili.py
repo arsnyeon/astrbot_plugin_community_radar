@@ -166,6 +166,36 @@ class BiliClient:
             })
         return out
 
+    async def feed(self, ps: int = 10) -> list[dict]:
+        """首页推荐流（刷 B 站用）。"""
+        await self.ensure_buvid()
+        url = await self._signed(
+            "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd",
+            {
+                "web_location": "1430650", "y_num": 3, "fresh_type": 4,
+                "feed_version": "V8", "fresh_idx": 1, "fresh_idx_1h": 1,
+                "fetch_row": 1, "brush": 0, "homepage_ver": 1, "ps": max(1, min(ps, 30)),
+            },
+        )
+        d = await self._get(url) or {}
+        out = []
+        for it in (d.get("item") or []):
+            if it.get("goto") not in ("av", None) or not it.get("bvid"):
+                continue
+            owner = it.get("owner") or {}
+            stat = it.get("stat") or {}
+            out.append({
+                "bvid": it.get("bvid"),
+                "aid": it.get("id") or it.get("aid"),
+                "title": it.get("title"),
+                "author": owner.get("name"),
+                "play": int(stat.get("view") or 0),
+                "like": int(stat.get("like") or 0),
+                "desc": str(it.get("desc") or "")[:200],
+                "duration": it.get("duration"),
+            })
+        return out
+
     async def popular(self, ps: int = 20) -> list[dict]:
         await self.ensure_buvid()
         d = await self._get(

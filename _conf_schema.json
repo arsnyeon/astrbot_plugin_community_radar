@@ -224,6 +224,55 @@
       }
     }
   },
+  "bili": {
+    "type": "object",
+    "description": "B 站自主浏览",
+    "hint": "让它自己刷 B 站推荐流，按喜好点赞或评论。写操作需要先在「B 站 Cookie」里填登录态。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用自主浏览",
+        "default": false
+      },
+      "dry_run": {
+        "type": "bool",
+        "description": "试运行",
+        "hint": "开启时只记录「本来想做什么」，不真的点赞评论。建议先开几天看看。",
+        "default": true
+      },
+      "auto_browse": {
+        "type": "bool",
+        "description": "定时自己刷",
+        "hint": "按下面的间隔自动刷推荐流并互动。",
+        "default": false
+      },
+      "interval_hours": {
+        "type": "float",
+        "description": "自动刷的间隔（小时）",
+        "default": 4
+      },
+      "caps": {
+        "type": "object",
+        "description": "每日互动上限",
+        "items": {
+          "like": { "type": "int", "description": "每天最多点赞", "default": 3 },
+          "comment": { "type": "int", "description": "每天最多评论", "default": 2 }
+        }
+      },
+      "min_write_gap_sec": {
+        "type": "int",
+        "description": "两次操作最小间隔（秒）",
+        "default": 120
+      },
+      "ai_provider_id": {
+        "type": "string",
+        "description": "挑视频用的模型",
+        "hint": "留空则使用当前会话的默认模型。",
+        "default": "",
+        "_special": "select_provider"
+      }
+    }
+  },
   "share": {
     "type": "object",
     "description": "主动分享",

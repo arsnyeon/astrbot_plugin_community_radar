@@ -23,6 +23,7 @@ from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.star.filter.command import GreedyStr
 
 from .bili import BiliClient, BiliError, find_video_id
+from .bili_duty import BiliDuty
 from .duty import BrowseDuty
 from .douyin_browser import DouyinBrowser
 from .douyin_duty import DouyinDuty
@@ -42,7 +43,7 @@ def _fmt_time(ts: int) -> str:
     "astrbot_plugin_community_radar",
     "arsnyeon",
     "社区雷达：有自己兴趣的社区雷达，主动逛 B 站 / 抖音 / 小黑盒，按偏好搜索与点评，接得住你分享的链接。",
-    "v0.9.0",
+    "v0.10.0",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
@@ -51,6 +52,8 @@ class CommunityRadarPlugin(Star):
         self.config = config or {}
         self.bili = BiliClient(cookie=str(self.config.get("bili_cookie", "")))
         self.heybox = HeyboxClient(cookie=str(self.config.get("heybox_cookie", "")))
+        self.bili_duty = BiliDuty(self)
+        self.bili_duty.start()
         self.duty = BrowseDuty(self)
         self.duty.start()
         self.douyin_cfg = dict(self.config.get("douyin") or {})
@@ -67,6 +70,7 @@ class CommunityRadarPlugin(Star):
     async def terminate(self) -> None:
         for stop in (
             self.duty.stop,
+            self.bili_duty.stop,
             self.douyin_duty.stop,
             self.bili.close,
             self.heybox.close,
@@ -287,6 +291,37 @@ class CommunityRadarPlugin(Star):
             return
         lines = [f"{c['name']}（赞{c['like']}）：{c['text']}" for c in items]
         yield event.plain_result(f"《{info['title']}》热评：\n" + "\n".join(lines))
+
+    @filter.command("b站刷", alias={"刷b站"}, desc="让它自己刷一会儿 B 站（试运行下只记录）")
+    async def bili_browse_cmd(self, event: AstrMessageEvent):
+        if not self._is_owner(event):
+            yield event.plain_result("这个操作只有主人能用。")
+            return
+        yield event.plain_result("去 B 站刷一会儿…")
+        r = await self.bili_duty.browse(owner_asked=True)
+        yield event.plain_result(r.get("message") or "刷完了")
+
+    @filter.command("b站状态", alias={"b站浏览状态"}, desc="看 B 站自主浏览的状态与今日额度")
+    async def bili_status_cmd(self, event: AstrMessageEvent):
+        s = self.bili_duty.state()
+        t, c = s["today"], s["caps"]
+        yield event.plain_result(
+            f"B 站自主浏览：{'开' if s['enabled'] else '关'}  "
+            f"试运行：{'开' if s['dry_run'] else '关'}  "
+            f"自动刷：{'开' if s['auto_browse'] else '关'}\n"
+            f"今日 看{t['watched']} 赞{t['like']}/{c['like']} 评{t['comment']}/{c['comment']}\n"
+            f"Cookie：{'已填' if s['has_cookie'] else '未填（写操作不可用）'}"
+        )
+
+    @filter.command("b站回复", desc="回复 B 站某条评论")
+    async def bili_reply_cmd(self, event: AstrMessageEvent, arg: GreedyStr):
+        parts = (arg or "").strip().split(" ", 2)
+        if len(parts) < 3:
+            yield event.plain_result("用法：/b站回复 BV号 评论rpid 回复内容")
+            return
+        bvid, rpid, text = parts
+        r = await self.bili_duty.reply(bvid.strip(), rpid.strip(), text.strip())
+        yield event.plain_result(r.get("message") or "没发成")
 
     # ── 小黑盒命令 ────────────────────────────────────────────────
 
@@ -694,6 +729,22 @@ class CommunityRadarPlugin(Star):
         if not r.get("ok"):
             return r.get("message") or "没看成这条内容"
         return f"（已通过{r.get('via')}看完）\n{r.get('digest')}"
+
+    @filter.llm_tool(name="bili_browse")
+    async def _t_bili_browse(self, event: AstrMessageEvent) -> str:
+        """自己去刷一会儿 B 站推荐流，按喜好点赞或评论。只有主人能触发。"""
+        if not self._is_owner(event):
+            return "只有主人能让我去刷 B 站。"
+        r = await self.bili_duty.browse(owner_asked=True)
+        return r.get("message") or "刷完了"
+
+    @filter.llm_tool(name="bili_reply")
+    async def _t_bili_reply(self, event: AstrMessageEvent, bvid: str, rpid: str, text: str) -> str:
+        """回复 B 站某条评论。bvid 视频号，rpid 评论号，text 回复内容。"""
+        if not self._is_owner(event):
+            return "只有主人能回复评论。"
+        r = await self.bili_duty.reply(bvid, rpid, text)
+        return r.get("message") or "没发成"
 
     # ── 抖音 LLM 工具 ────────────────────────────────────────────
 
