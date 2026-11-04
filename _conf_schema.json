@@ -275,6 +275,18 @@
         "hint": "留空则使用当前会话的默认模型。",
         "default": "",
         "_special": "select_provider"
+      },
+      "owner_mid": {
+        "type": "string",
+        "description": "主人的 B 站号（UID）",
+        "hint": "B 站私信分享用。是纯数字 UID（点开个人主页，网址 space.bilibili.com/ 后面那串），不是 QQ 号也不是昵称。留空则不走 B 站私信。",
+        "default": ""
+      },
+      "share_to": {
+        "type": "string",
+        "description": "分享渠道",
+        "hint": "qq = 只发聊天平台，bili = 只发 B 站私信，both = 两边都发。B 站私信需要登录态 + 主人的 B 站号。",
+        "default": "qq"
       }
     }
   },

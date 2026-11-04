@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.12.0
+
+- 新增 B 站私信分享：`radar_share` 可同时发 B 站私信（需要 B 站登录态 + 主人的 B 站 UID）
+- 新增 `/b站私信` 命令
+- 新增配置 `bili.owner_mid`（主人的 B 站 UID）、`bili.share_to`（qq / bili / both）
+
 ## v0.11.0
 
 - 自动浏览改为「自己决定什么时候逛」：不再填具体时间，改成 min~max 小时随机间隔，避开静默时段

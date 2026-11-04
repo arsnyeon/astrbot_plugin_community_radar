@@ -43,7 +43,7 @@ def _fmt_time(ts: int) -> str:
     "astrbot_plugin_community_radar",
     "arsnyeon",
     "社区雷达：自己决定什么时候逛 B 站 / 抖音 / 小黑盒，看得懂视频与图文，会点赞评论回复，也接得住你分享的链接。",
-    "v0.11.0",
+    "v0.12.0",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
@@ -151,6 +151,23 @@ class CommunityRadarPlugin(Star):
         if not admin:
             return ""
         return f"{self._platform_name()}:FriendMessage:{admin}"
+
+    def _bili_owner_mid(self) -> int:
+        return int((self.config.get("bili") or {}).get("owner_mid") or 0)
+
+    def _bili_share_enabled(self) -> bool:
+        return "bili" in str((self.config.get("bili") or {}).get("share_to") or "qq").lower()
+
+    async def _send_bili_dm(self, text: str) -> str:
+        """发一条 B 站私信给主人；返回空串表示成功，否则是错误信息。"""
+        mid = self._bili_owner_mid()
+        if not mid:
+            return "没配置主人的 B 站号（bili_owner_mid）"
+        try:
+            await self.bili.send_msg(mid, text)
+            return ""
+        except BiliError as exc:
+            return f"B 站私信失败：{exc}"
 
     def _share_state_file(self):
         from pathlib import Path
@@ -325,6 +342,18 @@ class CommunityRadarPlugin(Star):
         bvid, rpid, text = parts
         r = await self.bili_duty.reply(bvid.strip(), rpid.strip(), text.strip())
         yield event.plain_result(r.get("message") or "没发成")
+
+    @filter.command("b站私信", desc="给主人发一条 B 站私信")
+    async def bili_dm_cmd(self, event: AstrMessageEvent, arg: GreedyStr):
+        if not self._is_owner(event):
+            yield event.plain_result("这个操作只有主人能用。")
+            return
+        text = (arg or "").strip()
+        if not text:
+            yield event.plain_result("用法：/b站私信 内容（需要已配置主人的 B 站号）")
+            return
+        err = await self._send_bili_dm(text)
+        yield event.plain_result(err or "已通过 B 站私信发给他了")
 
     # ── 小黑盒命令 ────────────────────────────────────────────────
 
@@ -723,7 +752,12 @@ class CommunityRadarPlugin(Star):
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[CommunityRadar] 主动分享失败: {exc}")
             return f"分享失败：{exc}"
+        bili_err = ""
+        if self._bili_share_enabled():
+            bili_err = await self._send_bili_dm(text)
         self._mark_shared()
+        if bili_err:
+            return f"已私聊分享给主人（B 站私信没发成：{bili_err}）"
         return "已经私聊分享给主人了"
 
     @filter.llm_tool(name="radar_watch_video")

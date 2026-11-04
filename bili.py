@@ -128,7 +128,11 @@ class BiliClient:
         sub = str(wbi_img.get("sub_url") or "").split("/")[-1].split(".")[0]
         if img and sub:
             self._wbi = (img, sub, time.time())
-        return {"isLogin": bool(d.get("isLogin")), "uname": d.get("uname") or ""}
+        return {
+            "isLogin": bool(d.get("isLogin")),
+            "uname": d.get("uname") or "",
+            "mid": int(d.get("mid") or 0),
+        }
 
     async def _signed(self, base: str, params: dict) -> str:
         if self._wbi is None or time.time() - self._wbi[2] > 6 * 3600:
@@ -266,6 +270,34 @@ class BiliClient:
             {"aid": aid, "like": 1, "csrf": self._csrf()},
         )
         return True
+
+    async def send_msg(self, receiver_mid: int, text: str) -> dict:
+        """给某个 UID 发 B 站私信（需要登录态 + 对方允许接收私信）。"""
+        import secrets
+
+        csrf = self._csrf()
+        nav = await self.nav()
+        sender_mid = int(nav.get("mid") or 0)
+        if not sender_mid:
+            raise BiliError("拿不到自己的 B 站 UID（登录态可能失效）")
+        content = json.dumps({"content": str(text)[:500]}, ensure_ascii=False)
+        data = {
+            "msg[sender_uid]": str(sender_mid),
+            "msg[receiver_id]": str(int(receiver_mid)),
+            "msg[dev_id]": secrets.token_hex(8),
+            "msg[content]": content,
+            "msg[msg_type]": "1",
+            "msg[timestamp]": str(int(time.time() * 1000)),
+            "msg[msg_status]": "0",
+            "msg[new_face]": "0",
+            "msg[reply_event]": "0",
+            "build": "0",
+            "mobi_app": "web",
+            "csrf": csrf,
+            "csrf_token": csrf,
+        }
+        d = await self._post_form("https://api.vc.bilibili.com/web_im/v1/web_im/send_msg", data)
+        return {"ok": True, "data": d}
 
     async def comments(self, aid: str, limit: int = 12) -> list[dict]:
         url = await self._signed(
