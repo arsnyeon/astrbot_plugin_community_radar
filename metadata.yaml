@@ -1,0 +1,13 @@
+name: astrbot_plugin_community_radar
+display_name: 社区雷达
+short_desc: B站/小黑盒浏览与互动 + 定时自动刷社区，推送给主人。
+desc: 社区雷达：按需或定时浏览 B 站与小黑盒。B 站支持搜索、热门、视频详情、评论、发评论、点赞；小黑盒支持信息流、搜索、评论、点赞、发帖；支持定时自动刷社区并把内容推给主人或指定会话。B 站与小黑盒读操作免登录，写操作需 Cookie。抖音因依赖无头浏览器暂未实现。
+help: 命令：/b站搜索、/b站热门、/b站视频、/b站评论、/b站发评论、/b站点赞、/小黑盒、/小黑盒 search、/小黑盒发帖。LLM 工具：bili_search、bili_popular、bili_video_info、bili_comments、bili_comment、bili_like、heybox_feed、heybox_search、heybox_comment、heybox_like、heybox_post。定时浏览在配置页「定时浏览」里开启。
+version: v0.1.0
+author: arsnyeon
+repo: https://github.com/arsnyeon/astrbot_plugin_community_radar
+astrbot_version: ">=4.16,<5"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - telegram

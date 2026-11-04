@@ -1,0 +1,72 @@
+{
+  "bili_cookie": {
+    "type": "string",
+    "description": "B 站 Cookie（可选）",
+    "hint": "只做看类操作（搜索/热门/视频/评论）无需 Cookie。若要发评论、点赞，粘贴含 SESSDATA 和 bili_jct 的完整 Cookie。",
+    "default": ""
+  },
+  "heybox_cookie": {
+    "type": "string",
+    "description": "小黑盒 Cookie（可选）",
+    "hint": "信息流和搜索无需 Cookie；写操作（评论/发帖）需要含 pkey 与 x_xhh_tokenid 的完整 Cookie。",
+    "default": ""
+  },
+  "admin_uin": {
+    "type": "string",
+    "description": "主人 QQ 号",
+    "hint": "定时浏览未配置 targets 时，私聊推送给这个 QQ 号。",
+    "default": "2659055656"
+  },
+  "browse": {
+    "type": "object",
+    "description": "定时浏览",
+    "items": {
+      "enable": {
+        "type": "bool",
+        "description": "开启定时浏览",
+        "default": false
+      },
+      "times": {
+        "type": "list",
+        "description": "每天触发时间点",
+        "hint": "HH:MM 格式，可多个。例如 [\"12:30\", \"21:00\"] 表示每天这两个时间各刷一次。",
+        "default": ["12:30", "21:00"]
+      },
+      "platforms": {
+        "type": "string",
+        "description": "浏览平台",
+        "hint": "可选 bili / heybox / both。",
+        "default": "both"
+      },
+      "mode": {
+        "type": "string",
+        "description": "推送形式",
+        "hint": "links = 只发标题和链接；summary = 让模型挑几条写点评后发送。",
+        "default": "summary"
+      },
+      "count": {
+        "type": "int",
+        "description": "每个平台抓取条数",
+        "default": 5
+      },
+      "quiet_hours": {
+        "type": "string",
+        "description": "静默时段",
+        "hint": "例如 1-6 表示凌晨 1 点到 6 点不推送。",
+        "default": "1-6"
+      },
+      "targets": {
+        "type": "list",
+        "description": "推送目标 UMO 列表",
+        "hint": "留空则私聊 admin_uin；否则填完整 UMO，例如 渡可:FriendMessage:2659055656 或 渡可:GroupMessage:群号。",
+        "default": []
+      },
+      "ai_provider_id": {
+        "type": "string",
+        "description": "点评用模型 provider",
+        "hint": "summary 模式下生成点评用的模型；留空用当前会话默认模型。",
+        "default": ""
+      }
+    }
+  }
+}
