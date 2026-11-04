@@ -292,7 +292,7 @@ class CommunityRadarPlugin(Star):
         lines = [f"{c['name']}（赞{c['like']}）：{c['text']}" for c in items]
         yield event.plain_result(f"《{info['title']}》热评：\n" + "\n".join(lines))
 
-    @filter.command("b站刷", alias={"刷b站"}, desc="让它自己刷一会儿 B 站（试运行下只记录）")
+    @filter.command("刷b站", alias={"b站刷"}, desc="让它自己刷一会儿 B 站（试运行下只记录）")
     async def bili_browse_cmd(self, event: AstrMessageEvent):
         if not self._is_owner(event):
             yield event.plain_result("这个操作只有主人能用。")
