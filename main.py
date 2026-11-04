@@ -39,7 +39,7 @@ def _fmt_time(ts: int) -> str:
     "astrbot_plugin_community_radar",
     "arsnyeon",
     "社区雷达：有自己兴趣的社区雷达，主动逛 B 站 / 抖音 / 小黑盒，按偏好搜索与点评，接得住你分享的链接。",
-    "v0.4.0",
+    "v0.5.0",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
@@ -403,6 +403,33 @@ class CommunityRadarPlugin(Star):
             return
 
         yield event.plain_result("没看懂，发 /抖音 帮助 看用法。")
+
+    # ── 社区雷达自身 ──────────────────────────────────────────────
+
+    @filter.command("社区雷达", alias={"radar"}, desc="看社区雷达状态，或看它这会儿自己想搜什么")
+    async def radar_cmd(self, event: AstrMessageEvent, arg: GreedyStr = ""):
+        sub = str(arg or "").strip().lower()
+        cfg = self.config.get("browse") or {}
+        if sub in ("", "状态", "status"):
+            times = cfg.get("times") or []
+            yield event.plain_result(
+                f"定时浏览：{'开' if cfg.get('enable') else '关'}"
+                f"  时间：{'、'.join(str(t) for t in times) or '未设'}\n"
+                f"关键词来源：{cfg.get('interests_mode') or 'auto'}"
+                f"  平台：{cfg.get('platforms') or 'all'}"
+                f"  每次搜 {cfg.get('search_per_run', 2)} 个\n"
+                f"最近搜过：{'、'.join(self.duty._recent_keywords(6)) or '还没有'}"
+            )
+            return
+        if sub in ("兴趣", "想搜什么", "interests"):
+            persona = await self.duty._bot_persona(cfg)
+            words = await self.duty._pick_keywords(cfg, [], [], [], 3)
+            yield event.plain_result(
+                (f"人格节选：{persona[:100]}…\n" if persona else "")
+                + f"这会儿想搜：{'、'.join(words) if words else '（没生成出来，看日志）'}"
+            )
+            return
+        yield event.plain_result("用法：/社区雷达（状态）\n/社区雷达 兴趣（看它现在想搜什么）")
 
     # ── LLM 工具 ──────────────────────────────────────────────────
 

@@ -13,6 +13,7 @@ import asyncio
 import datetime
 import json
 import random
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,25 @@ DEFAULT_PERSONA = (
     "你是一个爱逛社区、有自己偏好和判断的人。看到对胃口的会多聊两句，"
     "没感觉的就跳过；会吐槽、会联想，但不会硬凑热闹。"
 )
+
+
+def _parse_keyword_array(text: str) -> list[str]:
+    """从模型输出里取出 JSON 数组形式的关键词，容忍多余文字。"""
+    s = str(text or "")
+    m = re.search(r"\[[^\]]*\]", s, re.S)
+    if not m:
+        return []
+    try:
+        data = json.loads(m.group(0))
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[str] = []
+    if isinstance(data, list):
+        for x in data:
+            w = str(x).strip().strip('"').strip("'")
+            if w and len(w) <= 20 and w not in out:
+                out.append(w)
+    return out
 
 
 class BrowseDuty:
@@ -136,45 +156,52 @@ class BrowseDuty:
         platforms = str(cfg.get("platforms") or "all").lower()
         count = max(1, int(cfg.get("count") or 5))
         mode = str(cfg.get("mode") or "summary").lower()
-        interests = [str(x).strip() for x in (cfg.get("interests") or []) if str(x).strip()]
         per_run = max(0, int(cfg.get("search_per_run") or 2))
-        picks = random.sample(interests, min(per_run, len(interests))) if interests and per_run else []
 
         bili_items: list[dict] = []
         heybox_items: list[dict] = []
         douyin_items: list[dict] = []
 
+        # 先拿到三个平台“眼前有什么”
         if platforms in ("bili", "both", "all"):
             try:
                 bili_items = await self.plugin.bili.popular(count)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[CommunityRadar] 拉 B 站热门失败: {exc}")
-            bili_items = await self._search(self.plugin.bili, "search", picks, bili_items, count)
 
         if platforms in ("heybox", "both", "all"):
             try:
                 heybox_items = (await self.plugin.heybox.feed(0))[:count]
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[CommunityRadar] 拉小黑盒信息流失败: {exc}")
-            heybox_items = await self._search(self.plugin.heybox, "search", picks, heybox_items, count)
 
         if platforms in ("douyin", "all") and getattr(self.plugin, "douyin_feed", None):
             try:
                 douyin_items = await self.plugin.douyin_feed.hot(count)
-                if interests:
-                    for x in douyin_items:
-                        if any(k in x["title"] for k in interests):
-                            x["_via"] = "合口味"
-                    douyin_items.sort(key=lambda x: (x.get("_via") != "合口味", x.get("rank", 99)))
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[CommunityRadar] 拉抖音热榜失败: {exc}")
+
+        # 再让模型按自己的人格 + 刚看到的内容决定「我现在想搜什么」
+        picks = await self._pick_keywords(cfg, bili_items, heybox_items, douyin_items, per_run)
+
+        if platforms in ("bili", "both", "all"):
+            bili_items = await self._search(self.plugin.bili, "search", picks, bili_items, count)
+
+        if platforms in ("heybox", "both", "all"):
+            heybox_items = await self._search(self.plugin.heybox, "search", picks, heybox_items, count)
+
+        if douyin_items and picks:
+            for x in douyin_items:
+                if any(k in x["title"] for k in picks):
+                    x["_via"] = "合口味"
+            douyin_items.sort(key=lambda x: (x.get("_via") != "合口味", x.get("rank", 99)))
 
         if not bili_items and not heybox_items and not douyin_items:
             return
 
         self._record_history({"B站": bili_items, "小黑盒": heybox_items, "抖音": douyin_items})
         if mode == "summary":
-            text = await self._summarize(bili_items, heybox_items, cfg, douyin_items, interests)
+            text = await self._summarize(bili_items, heybox_items, cfg, douyin_items, picks)
         else:
             text = self._links(bili_items, heybox_items, douyin_items)
 
@@ -182,6 +209,126 @@ class BrowseDuty:
             return
         text = f"【{hhmm} 逛社区】\n{text}"
         await self._send(text, cfg)
+
+    # ── 兴趣：由模型自己决定搜什么 ──────────────────────────────
+
+    async def _pick_keywords(
+        self,
+        cfg: dict,
+        bili: list[dict],
+        heybox: list[dict],
+        douyin: list[dict],
+        per_run: int,
+    ) -> list[str]:
+        if per_run <= 0:
+            return []
+        mode = str(cfg.get("interests_mode") or "hybrid").lower()
+        manual = [str(x).strip() for x in (cfg.get("interests") or []) if str(x).strip()]
+
+        auto: list[str] = []
+        if mode in ("auto", "hybrid"):
+            candidates = [
+                str(x.get("title") or "").strip()
+                for x in (bili + heybox + douyin)
+                if str(x.get("title") or "").strip()
+            ]
+            auto = await self._auto_keywords(cfg, candidates)
+
+        if mode == "manual":
+            pool = manual
+        elif mode == "auto":
+            pool = auto
+        else:
+            pool = manual + [w for w in auto if w not in manual]
+
+        uniq: list[str] = []
+        for w in pool:
+            if w and w not in uniq:
+                uniq.append(w)
+        random.shuffle(uniq)
+        picks = uniq[:per_run]
+        if picks:
+            self._record_keywords(picks)
+        return picks
+
+    async def _auto_keywords(self, cfg: dict, candidates: list[str]) -> list[str]:
+        """让模型按自己的人格和最近看到的东西，生成这次想搜的关键词。"""
+        provider = await self._resolve_provider(cfg)
+        if provider is None:
+            return []
+        persona = await self._bot_persona(cfg)
+        history = self._recent_history(8)
+        used = self._recent_keywords(6)
+
+        parts = ["你在决定自己接下来想搜什么。"]
+        if persona:
+            parts.append("你的人格设定：\n" + persona)
+        if history:
+            parts.append("你最近看过的：\n" + history)
+        if used:
+            parts.append("你上次搜过：" + "、".join(used) + "（这次换点新的，别重复）")
+        if candidates:
+            parts.append("刚刷到的标题：\n" + "\n".join(f"- {t}" for t in candidates[:12]))
+        parts.append(
+            "按你自己的口味，给出你现在真的想搜的 2~3 个关键词。"
+            "要具体（例如「独立游戏」「显卡降价」「恐怖游戏实况」），不要泛词（如「游戏」「视频」）。"
+            '只输出 JSON 数组，例如 ["独立游戏","显卡降价"]，不要任何解释。'
+        )
+        try:
+            resp = await provider.text_chat(
+                prompt="\n\n".join(parts),
+                session_id=self._default_target(cfg),
+                contexts=[],
+                system_prompt="你只输出 JSON 数组，不输出其他任何文字。",
+            )
+            words = _parse_keyword_array(getattr(resp, "completion_text", "") or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[CommunityRadar] 自动兴趣生成失败，这轮退回手动关键词: {exc}")
+            return []
+        return words[:3]
+
+    async def _bot_persona(self, cfg: dict) -> str:
+        """取当前会话生效的人格（大肥鱼），拿不到再退回插件里配置的 persona。"""
+        try:
+            pm = getattr(self.plugin.context, "persona_manager", None)
+            if pm is not None and hasattr(pm, "resolve_selected_persona"):
+                _, persona, _, _ = await pm.resolve_selected_persona(
+                    umo=self._default_target(cfg),
+                    conversation_persona_id=None,
+                    platform_name="",
+                    provider_settings=None,
+                )
+                if isinstance(persona, dict):
+                    prompt = str(persona.get("prompt") or "")
+                else:
+                    prompt = str(getattr(persona, "prompt", "") or "")
+                if prompt:
+                    return prompt[:1200]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[CommunityRadar] 读取人格失败: {exc}")
+        return str(cfg.get("persona") or "").strip()[:1200]
+
+    def _keywords_file(self) -> Path:
+        return self._history_file.parent / "interests_used.json"
+
+    def _recent_keywords(self, limit: int = 6) -> list[str]:
+        try:
+            data = json.loads(self._keywords_file().read_text(encoding="utf-8"))
+            return [str(x) for x in data][:limit] if isinstance(data, list) else []
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _record_keywords(self, words: list[str]) -> None:
+        if not words:
+            return
+        try:
+            merged = list(dict.fromkeys(list(words) + self._recent_keywords(20)))[:20]
+            self._keywords_file().parent.mkdir(parents=True, exist_ok=True)
+            self._keywords_file().write_text(
+                json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[CommunityRadar] 关键词记录失败: {exc}")
 
     @staticmethod
     async def _search(client: Any, method: str, picks: list[str], base: list[dict], count: int) -> list[dict]:

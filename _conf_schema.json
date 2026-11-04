@@ -40,10 +40,16 @@
         "hint": "bili = B 站，heybox = 小黑盒，douyin = 抖音热榜，both = B 站 + 小黑盒，all = 三者都要。",
         "default": "all"
       },
+      "interests_mode": {
+        "type": "string",
+        "description": "搜索关键词来源",
+        "hint": "auto = 完全由模型按自己的人格和最近看到的内容决定想搜什么（不需要你定关键词）；manual = 只用下面「感兴趣的关键词」；hybrid = 你定的 + 模型自己想的。默认 auto。",
+        "default": "auto"
+      },
       "interests": {
         "type": "list",
-        "description": "感兴趣的关键词",
-        "hint": "她会从中挑关键词主动搜索，而不只是被动看热门。例如 [\"独立游戏\", \"人工智能\", \"猫\"]。留空则只看热门。",
+        "description": "感兴趣的关键词（备用种子）",
+        "hint": "只在 interests_mode 为 manual 或 hybrid 时使用；auto 模式下会完全忽略这里，由模型自己决定。",
         "default": []
       },
       "search_per_run": {
