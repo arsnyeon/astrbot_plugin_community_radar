@@ -249,7 +249,7 @@ class DouyinBrowser:
             )
             ctx = self._browser.contexts[0] if self._browser.contexts else await self._browser.new_context()
             self._page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-            await self._page.set_default_timeout(15000)
+            self._page.set_default_timeout(15000)
             href = str(await self._page.evaluate("location.href") or "")
             if not href.startswith(HOME):
                 await self._page.goto(HOME, wait_until="domcontentloaded", timeout=20000)

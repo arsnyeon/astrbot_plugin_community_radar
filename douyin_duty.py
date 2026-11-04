@@ -14,6 +14,7 @@ import json
 import random
 import re
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -241,7 +242,7 @@ class DouyinDuty:
             logger.warning(f"[CommunityRadar] 刷抖音失败: {exc}")
             return {"ok": False, "message": f"刷抖音失败：{exc}", "code": getattr(exc, "code", "")}
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[CommunityRadar] 刷抖音异常: {exc}")
+            logger.warning(f"[CommunityRadar] 刷抖音异常: {exc}\n{traceback.format_exc()}")
             return {"ok": False, "message": f"刷抖音异常：{exc}"}
         finally:
             self._busy = False

@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## v0.12.1
+
+- 修复致命 bug：`await self._page.set_default_timeout(15000)` —— Playwright 的
+  `set_default_timeout` 是同步方法，`await` 它返回 None 直接抛异常，导致抖音写层
+  的 `/抖音 刷`、`/抖音 登录` 全部报「object NoneType can't be used in 'await' expression」
+- `douyin_duty.browse` 的兜底异常补上 traceback 日志
+
 ## v0.12.0
 
 - 新增 B 站私信分享：`radar_share` 可同时发 B 站私信（需要 B 站登录态 + 主人的 B 站 UID）
