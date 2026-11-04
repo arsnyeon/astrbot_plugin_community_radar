@@ -53,6 +53,7 @@ class BrowseDuty:
         self._task: asyncio.Task | None = None
         self._done: dict[str, set[str]] = {}
         self._history_file = self._data_dir() / "browse_history.json"
+        self._state_file = self._data_dir() / "browse_state.json"
 
     @staticmethod
     def _data_dir() -> Path:
@@ -61,6 +62,72 @@ class BrowseDuty:
             return Path(StarTools.get_data_dir("astrbot_plugin_community_radar"))
         except Exception:  # noqa: BLE001
             return Path("/AstrBot/data/plugin_data/astrbot_plugin_community_radar")
+
+    # ── 自主调度状态 ─────────────────────────────────────────────
+
+    def _load_state(self) -> dict:
+        try:
+            data = json.loads(self._state_file.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:  # noqa: BLE001
+            return {}
+
+    def _save_state(self, state: dict) -> None:
+        try:
+            self._state_file.parent.mkdir(parents=True, exist_ok=True)
+            self._state_file.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[CommunityRadar] 浏览调度状态写入失败: {exc}")
+
+    def _next_due(self, now: float, cfg: dict) -> float:
+        """随机决定下一次什么时候逛：在 min~max 小时里取一点，避开静默时段。"""
+        lo = max(0.25, float(cfg.get("interval_min_hours") or 1.0))
+        hi = max(lo, float(cfg.get("interval_max_hours") or 5.0))
+        nxt = now + random.uniform(lo, hi) * 3600
+        quiet = str(cfg.get("quiet_hours") or "1-6")
+        # 落在静默时段就顺延到静默结束
+        for _ in range(12):
+            if not self._in_quiet_hours_ts(quiet, nxt):
+                break
+            nxt = self._quiet_end(quiet, nxt)
+        return nxt
+
+    def schedule_now(self) -> None:
+        """把下一次浏览提前到现在（/社区雷达 逛 用）。"""
+        state = self._load_state()
+        state["next_due_at"] = 0.0
+        self._save_state(state)
+
+    @staticmethod
+    def _quiet_range(quiet: str) -> tuple[int, int] | None:
+        try:
+            start, end = (int(x) for x in str(quiet).split("-"))
+            return start, end
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _in_quiet_hours_ts(self, quiet: str, ts: float) -> bool:
+        rng = self._quiet_range(quiet)
+        if not rng:
+            return False
+        start, end = rng
+        h = datetime.datetime.fromtimestamp(ts).hour
+        if start <= end:
+            return start <= h < end
+        return h >= start or h < end  # 跨天，例如 23-6
+
+    def _quiet_end(self, quiet: str, ts: float) -> float:
+        rng = self._quiet_range(quiet)
+        if not rng:
+            return ts
+        start, _ = rng
+        dt = datetime.datetime.fromtimestamp(ts)
+        target = dt.replace(hour=start, minute=0, second=0, microsecond=0)
+        if target <= dt:
+            target += datetime.timedelta(days=1)
+        return target.timestamp()
+
+    # ── 调度循环 ────────────────────────────────────────────────
 
     def start(self) -> None:
         if self._task is None:
@@ -73,42 +140,39 @@ class BrowseDuty:
 
     async def _loop(self) -> None:
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(60)
             try:
                 await self._tick()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                logger.warning(f"[CommunityRadar] 定时浏览异常: {exc}")
+                logger.warning(f"[CommunityRadar] 自动浏览异常: {exc}")
 
     async def _tick(self) -> None:
         cfg = self.plugin.config.get("browse") or {}
         if not cfg.get("enable"):
             return
-        now = datetime.datetime.now()
-        hhmm = now.strftime("%H:%M")
-        today = now.strftime("%Y-%m-%d")
-        times = [str(t).strip() for t in (cfg.get("times") or []) if str(t).strip()]
-        if hhmm not in times:
+        now = time.time()
+        state = self._load_state()
+        due = float(state.get("next_due_at") or 0)
+        if due <= 0:
+            due = self._next_due(now, cfg)
+            state["next_due_at"] = due
+            self._save_state(state)
             return
-        if self._in_quiet_hours(cfg.get("quiet_hours", "1-6"), now):
+        if now < due:
             return
-        done = self._done.setdefault(today, set())
-        if hhmm in done:
-            return
-        done.add(hhmm)
-        await self._run(hhmm, cfg)
+        await self._run(cfg)
+        state["last_run"] = now
+        state["next_due_at"] = self._next_due(now, cfg)
+        self._save_state(state)
 
-    @staticmethod
-    def _in_quiet_hours(quiet: str, now: datetime.datetime) -> bool:
-        try:
-            start, end = (int(x) for x in str(quiet).split("-"))
-        except Exception:  # noqa: BLE001
-            return False
-        h = now.hour
-        if start <= end:
-            return start <= h < end
-        return h >= start or h < end  # 跨天，例如 23-6
+    def next_run_text(self) -> str:
+        state = self._load_state()
+        due = float(state.get("next_due_at") or 0)
+        if due <= 0:
+            return "待定（下次 tick 会随机排期）"
+        return datetime.datetime.fromtimestamp(due).strftime("%m-%d %H:%M")
 
     # ── 浏览历史 ────────────────────────────────────────────────
 
@@ -152,7 +216,7 @@ class BrowseDuty:
 
     # ── 一次浏览 ────────────────────────────────────────────────
 
-    async def _run(self, hhmm: str, cfg: dict) -> None:
+    async def _run(self, cfg: dict) -> None:
         platforms = str(cfg.get("platforms") or "all").lower()
         count = max(1, int(cfg.get("count") or 5))
         mode = str(cfg.get("mode") or "summary").lower()

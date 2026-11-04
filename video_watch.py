@@ -383,6 +383,12 @@ class VideoWatch:
                     r = await client.get(u, headers={"User-Agent": BILI_UA})
                     if r.status_code != 200 or len(r.content) < 3000:
                         continue
+                    ctype = str(r.headers.get("content-type") or "")
+                    if not ctype.startswith("image/"):
+                        continue
+                    if len(r.content) > 10 * 1024 * 1024:  # 10MB 上限，防止吃内存
+                        logger.warning(f"[CommunityRadar] 图片过大，跳过 {len(r.content)}B")
+                        continue
                     fd, path = tempfile.mkstemp(suffix=".jpg", prefix="radar_img_")
                     with os.fdopen(fd, "wb") as f:
                         f.write(r.content)
@@ -431,7 +437,7 @@ class VideoWatch:
             except Exception:  # noqa: BLE001
                 return None
         try:
-            return await ctx.get_using_provider_async("")
+            return await ctx.get_using_provider_async(None)
         except Exception:  # noqa: BLE001
             return None
 

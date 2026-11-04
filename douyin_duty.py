@@ -345,11 +345,11 @@ class DouyinDuty:
                     logger.warning("[CommunityRadar] 这条视频没分享出去")
 
         self._save()
-        head = f"【社区雷达·抖音】看了 {len(looked)} 个视频，点赞 {liked}，评论 {commented}，分享 {shared}"
+        head = f"刚刷了会儿抖音，看了 {len(looked)} 个视频"
         if self.cfg.get("dry_run", True):
-            head += "（试运行：未真的点赞评论，站内私信分享只记录）"
+            head += "（试运行，没真点赞评论）"
         if shared_list:
-            head += "\n分享给你：" + "、".join(shared_list[:3])
+            head += "，有几个想发给你：" + "、".join(shared_list[:3])
         await self._send(head)
         return {"ok": True, "message": head, "watched": len(looked), "liked": liked,
                 "commented": commented, "shared": shared, "titles": [v["title"] for v in looked]}

@@ -42,8 +42,8 @@ def _fmt_time(ts: int) -> str:
 @register(
     "astrbot_plugin_community_radar",
     "arsnyeon",
-    "社区雷达：有自己兴趣的社区雷达，主动逛 B 站 / 抖音 / 小黑盒，按偏好搜索与点评，接得住你分享的链接。",
-    "v0.10.0",
+    "社区雷达：自己决定什么时候逛 B 站 / 抖音 / 小黑盒，看得懂视频与图文，会点赞评论回复，也接得住你分享的链接。",
+    "v0.11.0",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
@@ -101,6 +101,9 @@ class CommunityRadarPlugin(Star):
         if now - self._peek_last.get(umo, 0) < cooldown:
             return
         self._peek_last[umo] = now
+        if len(self._peek_last) > 200:  # 防止字典无界增长
+            cutoff = now - max(cooldown, 3600)
+            self._peek_last = {k: v for k, v in self._peek_last.items() if v > cutoff}
         try:
             injected = await self.link_peek.peek(text, cfg)
         except Exception as exc:  # noqa: BLE001
@@ -526,20 +529,28 @@ class CommunityRadarPlugin(Star):
 
     # ── 社区雷达自身 ──────────────────────────────────────────────
 
-    @filter.command("社区雷达", alias={"radar"}, desc="看社区雷达状态，或看它这会儿自己想搜什么")
+    @filter.command("社区雷达", alias={"radar"}, desc="看社区雷达状态，或手动让它现在去逛")
     async def radar_cmd(self, event: AstrMessageEvent, arg: GreedyStr = ""):
         sub = str(arg or "").strip().lower()
         cfg = self.config.get("browse") or {}
         if sub in ("", "状态", "status"):
-            times = cfg.get("times") or []
             yield event.plain_result(
-                f"定时浏览：{'开' if cfg.get('enable') else '关'}"
-                f"  时间：{'、'.join(str(t) for t in times) or '未设'}\n"
+                f"自动浏览：{'开' if cfg.get('enable') else '关'}"
+                f"  下次：{self.duty.next_run_text()}\n"
+                f"间隔：{cfg.get('interval_min_hours', 1)}~{cfg.get('interval_max_hours', 5)} 小时"
+                f"  静默：{cfg.get('quiet_hours', '1-6')}\n"
                 f"关键词来源：{cfg.get('interests_mode') or 'auto'}"
                 f"  平台：{cfg.get('platforms') or 'all'}"
                 f"  每次搜 {cfg.get('search_per_run', 2)} 个\n"
                 f"最近搜过：{'、'.join(self.duty._recent_keywords(6)) or '还没有'}"
             )
+            return
+        if sub in ("逛", "现在逛", "go", "now"):
+            if not self._is_owner(event):
+                yield event.plain_result("只有主人能让我现在去逛。")
+                return
+            self.duty.schedule_now()
+            yield event.plain_result("好，我这就去逛一圈，最多一分钟内会给你发消息。")
             return
         if sub in ("兴趣", "想搜什么", "interests"):
             persona = await self.duty._bot_persona(cfg)

@@ -188,6 +188,7 @@ class DouyinBrowser:
         self._chrome_proc: subprocess.Popen | None = None
         self._xvfb_proc: subprocess.Popen | None = None
         self._lock = asyncio.Lock()
+        self._probe_client = httpx.AsyncClient(timeout=2.0)
 
     @staticmethod
     def _default_data_dir() -> str:
@@ -222,8 +223,7 @@ class DouyinBrowser:
 
     async def _cdp_alive(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=2.0) as c:
-                r = await c.get(f"http://127.0.0.1:{self.port}/json/version")
+            r = await self._probe_client.get(f"http://127.0.0.1:{self.port}/json/version")
             return r.status_code == 200
         except Exception:  # noqa: BLE001
             return False
@@ -335,6 +335,10 @@ class DouyinBrowser:
                 except Exception:  # noqa: BLE001
                     pass
         self._chrome_proc = self._xvfb_proc = None
+        try:
+            await self._probe_client.aclose()
+        except Exception:  # noqa: BLE001
+            pass
 
     # ── 页面内接口 ──────────────────────────────────────────────
 

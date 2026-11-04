@@ -79,8 +79,6 @@ class BiliDuty:
         return max(0, self._caps().get(kind, 0) - int(self.s.get(kind) or 0))
 
     def _blocked(self, kind: str) -> str:
-        if not self.cfg.get("enabled"):
-            return "B 站自主浏览没打开"
         if self._left(kind) <= 0:
             return f"今天的{kind}额度用完了"
         gap = int(self.cfg.get("min_write_gap_sec") or 120)
@@ -190,7 +188,7 @@ class BiliDuty:
             except Exception:  # noqa: BLE001
                 return None
         try:
-            return await ctx.get_using_provider_async("")
+            return await ctx.get_using_provider_async(None)
         except Exception:  # noqa: BLE001
             return None
 
@@ -305,7 +303,7 @@ class BiliDuty:
         if not self.cfg.get("enabled") or not self.cfg.get("auto_browse"):
             return
         hours = float(self.cfg.get("interval_hours") or 4)
-        last = float(self.cfg.get("_last_run") or 0)
+        last = float(self.s.get("last_auto_run") or 0)
         if time.time() - last < hours * 3600:
             return
         try:
@@ -314,4 +312,5 @@ class BiliDuty:
                 await self.plugin.duty._send(f"刚刷了会儿 B 站。{r['message']}", self.plugin.config.get("browse") or {})
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[CommunityRadar] B 站定时浏览异常: {exc}")
-        self.cfg["_last_run"] = time.time()
+        self.s["last_auto_run"] = time.time()
+        self._save()

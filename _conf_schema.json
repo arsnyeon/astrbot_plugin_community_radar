@@ -24,15 +24,20 @@
     "items": {
       "enable": {
         "type": "bool",
-        "description": "启用定时浏览",
-        "hint": "开启后按下面的时间点自动逛社区并推送；关闭时仍可手动使用命令。",
+        "description": "启用自动浏览",
+        "hint": "开启后她会在下面这个时间区间里随机挑一个时间自己逛社区；不用你设具体几点。关闭时仍可用 /社区雷达 逛 手动触发。",
         "default": false
       },
-      "times": {
-        "type": "list",
-        "description": "每天浏览时间",
-        "hint": "24 小时制 HH:MM，可填多个。例如 [\"12:30\", \"21:00\"] 表示每天各浏览一次。",
-        "default": ["12:30", "21:00"]
+      "interval_min_hours": {
+        "type": "float",
+        "description": "两次浏览的最小间隔（小时）",
+        "hint": "她会在 min~max 之间随机决定下一次什么时候逛，避开静默时段。",
+        "default": 1.0
+      },
+      "interval_max_hours": {
+        "type": "float",
+        "description": "两次浏览的最大间隔（小时）",
+        "default": 5.0
       },
       "platforms": {
         "type": "string",
