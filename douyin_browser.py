@@ -430,11 +430,11 @@ class DouyinBrowser:
             raise BrowserError("这个视频打不开（删了、私密或者是直播）")
         return v
 
-    async def comments(self, aweme_id: str) -> list[dict]:
+    async def comments(self, aweme_id: str, limit: int = 15) -> list[dict]:
         p = await self._api("/aweme/v1/web/comment/list/", {
-            "aweme_id": aweme_id, "cursor": 0, "count": 20, "item_type": 0,
+            "aweme_id": aweme_id, "cursor": 0, "count": 30, "item_type": 0,
         })
-        return parse_comments(p)
+        return parse_comments(p, limit)
 
     async def grab_frames(self, vid: str, count: int = 3) -> list[str]:
         """在真实播放器上按时间点截图，返回若干帧的本地路径。

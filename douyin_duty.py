@@ -493,14 +493,12 @@ class DouyinDuty:
                     except Exception:  # noqa: BLE001
                         pass
 
-        # 2) 评论区：点赞最高的几条
+        # 2) 评论区：让它自己挑觉得有意思的
         try:
             cs = await self.b.comments(vid)
-            if cs:
-                top = cs[:3]
-                parts.append("热评：" + " / ".join(
-                    f"{c.get('text') or ''}"[:26] for c in top if c.get("text")
-                ))
+            picked = await self._pick_comments(cs, 3)
+            if picked:
+                parts.append("热评：" + " / ".join(picked))
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[CommunityRadar] 抖音评论读取失败: {exc}")
 
@@ -519,6 +517,55 @@ class DouyinDuty:
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[CommunityRadar] 抖音 SSR 兜底失败: {exc}")
         return ""
+
+    async def _pick_comments(self, comments: list[dict], limit: int = 3) -> list[str]:
+        """按自己的人格挑它觉得有意思的评论；挑不出来就退回点赞最高的几条。"""
+        pool = [c for c in (comments or []) if str(c.get("text") or "").strip()][:15]
+        if not pool:
+            return []
+        fallback = [str(c["text"])[:40] for c in pool[:limit]]
+        provider = await self._provider()
+        if provider is None:
+            return fallback
+        lines = "\n".join(
+            f"{i + 1}. {str(c.get('text') or '')[:60]}（{c.get('likes') or 0} 赞）"
+            for i, c in enumerate(pool)
+        )
+        prompt = (
+            (f"你的人格：\n{self.persona}\n\n" if self.persona else "")
+            + "这条视频下面的评论：\n" + lines
+            + f"\n\n按你自己的口味，挑 {limit} 条你觉得最有意思、最想接一句的。"
+              "只看内容有没有意思，不用管点赞多少。"
+              "只输出 JSON 数组，元素是序号数字，例如 [2,5,7]。"
+        )
+        try:
+            resp = await provider.text_chat(
+                prompt=prompt, session_id="", contexts=[],
+                system_prompt="你只输出 JSON 数组，不输出其他内容。",
+            )
+            raw = str(getattr(resp, "completion_text", "") or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[CommunityRadar] 挑选评论失败，退回热评: {exc}")
+            return fallback
+
+        m = re.search(r"\[[\d,\s]*\]", raw)
+        if not m:
+            return fallback
+        try:
+            idxs = json.loads(m.group(0))
+        except Exception:  # noqa: BLE001
+            return fallback
+        picked: list[str] = []
+        for i in idxs:
+            try:
+                n = int(i) - 1
+            except Exception:  # noqa: BLE001
+                continue
+            if 0 <= n < len(pool):
+                text = str(pool[n].get("text") or "")[:40]
+                if text and text not in picked:
+                    picked.append(text)
+        return picked[:limit] or fallback
 
     async def _share(self, v: dict, text: str, digest: str = "") -> dict:
         """把视频分享给主人。按 share_to 走抖音站内私信、QQ，或两边都发。

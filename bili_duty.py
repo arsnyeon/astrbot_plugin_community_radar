@@ -120,7 +120,7 @@ class BiliDuty:
                     info = await self.plugin.bili.view(str(it["bvid"]))
                     aid = str(info.get("aid") or "")
                 if aid:
-                    cs = await self.plugin.bili.comments(aid, limit=3)
+                    cs = await self.plugin.bili.comments(aid, limit=8)
                     it["_comments"] = [str(c.get("text") or "")[:40] for c in cs if c.get("text")]
             except Exception as exc:  # noqa: BLE001
                 logger.debug(f"[CommunityRadar] B 站评论读取失败: {exc}")
@@ -186,7 +186,7 @@ class BiliDuty:
             line = f"- {x.get('bvid')} 《{x.get('title')}》 UP:{x.get('author')} 播放{x.get('play')}"
             cs = x.get("_comments") or []
             if cs:
-                line += "\n  热评：" + " / ".join(cs[:3])
+                line += "\n  评论：" + " / ".join(cs[:5])
             lines.append(line)
         prompt = (
             (f"你的人格：\n{persona}\n\n" if persona else "")
