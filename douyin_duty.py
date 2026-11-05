@@ -376,12 +376,24 @@ class DouyinDuty:
                     logger.warning("[CommunityRadar] 这条视频没分享出去")
 
         self._save()
-        head = f"刚刷了会儿抖音，看了 {len(looked)} 个视频"
-        if self.cfg.get("dry_run", True):
-            head += "（试运行，没真点赞评论）"
+
+        # 定时刷：只有在它真想分享时才说话；主人专门让它刷才汇报
         if shared_bodies:
-            head += "\n\n" + shared_bodies[0]
-        return {"ok": True, "message": head, "watched": len(looked), "liked": liked,
+            msg = shared_bodies[0]
+        elif owner_asked:
+            bits = []
+            if liked:
+                bits.append(f"赞了 {liked} 个")
+            if commented:
+                bits.append(f"评了 {commented} 条")
+            msg = f"刷了 {len(looked)} 个视频"
+            msg += ("，" + "、".join(bits)) if bits else "，没特别想互动的"
+            if self.cfg.get("dry_run", True):
+                msg += "（试运行，没真操作）"
+        else:
+            msg = ""
+
+        return {"ok": True, "message": msg, "watched": len(looked), "liked": liked,
                 "commented": commented, "shared": shared, "titles": [v["title"] for v in looked]}
 
     async def _decide(self, digests: list[str], owner_asked: bool) -> list[dict]:

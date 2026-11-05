@@ -150,8 +150,12 @@ class BiliDuty:
         self._save()
 
         if not done:
-            return {"ok": True, "message": f"刷了 {len(items)} 条，没有特别想互动的"}
-        return {"ok": True, "message": "；".join(done), "titles": [x["title"] for x in items[:5]]}
+            # 定时刷且什么都没做：不打扰
+            return {"ok": True, "message": "" if not owner_asked else f"刷了 {len(items)} 条，没特别想互动的"}
+        msg = "；".join(done)
+        if self.cfg.get("dry_run", True) and owner_asked:
+            msg += "（试运行，没真操作）"
+        return {"ok": True, "message": msg, "titles": [x["title"] for x in items[:5]]}
 
     async def _deep_watch(self, item: dict) -> str:
         """真看一遍：字幕优先，没字幕就抽帧描述画面。"""
