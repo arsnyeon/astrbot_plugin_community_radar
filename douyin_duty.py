@@ -53,6 +53,20 @@ def _pick_json(out: str) -> list:
         return []
 
 
+def _clean_caption(text: str, limit: int = 90) -> str:
+    """把视觉模型的描述压成一句人话：去掉 markdown、分帧标题、编号。"""
+    s = str(text or "")
+    s = re.sub(r"```[\s\S]*?```", " ", s)
+    s = re.sub(r"[*#>`_]+", "", s)
+    s = re.sub(r"第[一二三四五六七八九十\d]+帧[：:\s]*", "", s)
+    s = re.sub(r"(画面|场景|氛围|一句话概括|总结)[：:]\s*", "", s)
+    s = re.sub(r"\s+", " ", s).strip(" ，,。.;；")
+    if len(s) > limit:
+        cut = max(s.rfind("。", 0, limit), s.rfind("，", 0, limit), s.rfind(" ", 0, limit))
+        s = s[: cut if cut > 20 else limit]
+    return s.strip(" ，,。.;；")
+
+
 class DouyinDuty:
     def __init__(self, plugin: Any, browser: DouyinBrowser, cfg: dict):
         self.plugin = plugin
@@ -260,9 +274,11 @@ class DouyinDuty:
         if why:
             raise BrowserError("要验证：" + why, "verify")
 
-        want = self._left("watch") if not owner_asked else max(1, min(5, self._left("watch") or 3))
-        if want <= 0:
+        # 一次能刷几个：看今天还剩多少额度，由它自己决定看多少条
+        left = self._left("watch")
+        if left <= 0:
             return {"ok": False, "message": "今天看的视频数到上限了"}
+        want = left if not owner_asked else max(1, left)
         items = await self.b.feed(int(self.s.get("refresh_index") or 1))
         if not items:
             return {"ok": False, "message": "推荐流是空的（可能没登录或被风控）"}
@@ -282,6 +298,7 @@ class DouyinDuty:
                     raise
                 logger.warning(f"[CommunityRadar] 看视频 {v['aweme_id']} 失败: {exc}")
                 continue
+            d["_comments"] = cs
             looked.append(d)
             digests.append(f"#{len(looked)}\n{digest_of(d, cs)}")
             seen.add(v["aweme_id"])
@@ -299,9 +316,19 @@ class DouyinDuty:
         decisions = await self._decide(digests, owner_asked)
         liked = commented = shared = 0
         shared_bodies: list[str] = []
+        dec_by_i: dict[int, dict] = {}
+        for x in decisions:
+            if isinstance(x, dict):
+                try:
+                    dec_by_i[int(x.get("i"))] = x
+                except Exception:  # noqa: BLE001
+                    continue
         for idx, d in enumerate(looked):
-            dec = decisions[idx] if idx < len(decisions) and isinstance(decisions[idx], dict) else {}
+            dec = dec_by_i.get(idx + 1) or {}
             dry = bool(self.cfg.get("dry_run", True))
+            # 只要它打算动手（赞/评/分享），就先真看一遍画面
+            wants_act = bool(dec.get("like") or dec.get("comment") or dec.get("share"))
+            deep = await self._deep_watch(d) if wants_act else ""
             if dec.get("like") and not self._blocked("like"):
                 if dry:
                     self._record("dry:like", aweme_id=d["aweme_id"], title=d["title"])
@@ -337,9 +364,7 @@ class DouyinDuty:
                             break
             share_text = _clip(dec.get("share"), 120)
             if share_text and self._left("share") > 0 and not self._paused():
-                # 真要发给主人的那条，先用画面/文案真看一遍再写
-                digest = await self._deep_watch(d)
-                r = await self._share(d, share_text, digest)
+                r = await self._share(d, share_text, deep)
                 if r.get("ok"):
                     self.s["share"] = int(self.s.get("share", 0)) + 1
                     self._record("share", aweme_id=d["aweme_id"], title=d["title"],
@@ -355,17 +380,19 @@ class DouyinDuty:
         if self.cfg.get("dry_run", True):
             head += "（试运行，没真点赞评论）"
         if shared_bodies:
-            head += "\n\n" + "\n\n".join(shared_bodies[:2])
+            head += "\n\n" + shared_bodies[0]
         return {"ok": True, "message": head, "watched": len(looked), "liked": liked,
                 "commented": commented, "shared": shared, "titles": [v["title"] for v in looked]}
 
     async def _decide(self, digests: list[str], owner_asked: bool) -> list[dict]:
         """让模型按人格决定点赞/评论/分享。失败就退化为「只看不动手」。"""
         prompt = (
-            "你刚刷了一会儿抖音，下面是看到的视频。对每个视频给一个对象："
+            "你刚刷了一会儿抖音，下面每条都带了文案和热评。"
+            "挑 0~3 条你真有话说、真想互动的（没感觉就返回空数组），每条给一个对象："
             '{"i":序号, "feeling":"一句真实感受", "like":true/false, '
             '"comment":"想发的评论（像普通观众，一两句，不想评就空字符串）", '
             '"share":"特别想让主人看时写一句推荐语，不想分享就空字符串"}。\n'
+            "判断要基于文案和热评里实际写了什么，不要只看标题。\n"
             + (f"这次最多点赞 {self._left('like')} 个、评论 {self._left('comment')} 个、分享 {self._left('share')} 个。" if not self.cfg.get("dry_run", True) else "")
             + ("主人专门让你找视频，至少挑一个写 share。" if owner_asked else "")
             + "只输出 JSON 数组，不要解释。\n\n" + "\n\n".join(digests)
@@ -454,7 +481,7 @@ class DouyinDuty:
             try:
                 caption = await vw._caption(frames, cfg)
                 if caption:
-                    parts.append(f"画面：{caption.strip()[:600]}")
+                    parts.append("画面：" + _clean_caption(caption))
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[CommunityRadar] 抖音画面描述失败: {exc}")
             finally:
@@ -470,11 +497,9 @@ class DouyinDuty:
         try:
             cs = await self.b.comments(vid)
             if cs:
-                top = cs[:6]
-                parts.append("热评：\n" + "\n".join(
-                    f"  {c.get('name') or '匿名'}：{c.get('text') or ''}"
-                    + (f"（{c.get('likes')}赞）" if c.get("likes") else "")
-                    for c in top
+                top = cs[:3]
+                parts.append("热评：" + " / ".join(
+                    f"{c.get('text') or ''}"[:26] for c in top if c.get("text")
                 ))
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[CommunityRadar] 抖音评论读取失败: {exc}")
@@ -542,13 +567,13 @@ class DouyinDuty:
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(f"[CommunityRadar] 抖音里分享异常: {exc}")
 
-        body = f"《{v['title']}》\n{text}"
+        body = f"《{v['title']}》\n{_clip(text, 60)}"
         if digest:
-            body += f"\n{digest}"
+            body += f"\n{_clip(digest, 120)}"
         body += f"\n{v['url']}"
         if mode in ("qq", "both") or not via:
             via.append("qq")
-        return {"ok": bool(via), "via": via, "body": body}
+        return {"ok": bool(via), "via": via, "body": body[:400]}
 
     async def share_video(self, link: str, text: str = "") -> dict:
         """主人明确要求分享某条视频：按 share_to 分发，计入当日份额额。"""

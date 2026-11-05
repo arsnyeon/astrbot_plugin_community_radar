@@ -111,6 +111,20 @@ class BiliDuty:
             return {"ok": False, "message": f"拉推荐流失败：{exc}"}
         if not items:
             return {"ok": False, "message": "推荐流是空的"}
+
+        # 先看评论区：每条补 3 条热评，判断才不是只看标题
+        for it in items[:8]:
+            try:
+                aid = str(it.get("aid") or "")
+                if not aid and it.get("bvid"):
+                    info = await self.plugin.bili.view(str(it["bvid"]))
+                    aid = str(info.get("aid") or "")
+                if aid:
+                    cs = await self.plugin.bili.comments(aid, limit=3)
+                    it["_comments"] = [str(c.get("text") or "")[:40] for c in cs if c.get("text")]
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"[CommunityRadar] B 站评论读取失败: {exc}")
+
         self.s["watched"] = int(self.s.get("watched") or 0) + len(items)
 
         plan = await self._decide(items)
@@ -120,6 +134,8 @@ class BiliDuty:
             item = next((x for x in items if x.get("bvid") == bvid), None)
             if not item:
                 continue
+            wants_act = bool(action.get("like") or action.get("comment"))
+            digest = await self._deep_watch(item) if wants_act else ""
             if action.get("like"):
                 r = await self.like(bvid)
                 if r.get("ok"):
@@ -129,11 +145,31 @@ class BiliDuty:
                 r = await self.comment(bvid, text)
                 if r.get("ok"):
                     done.append(f"评论了《{item['title'][:18]}》：{text}")
+                    if digest:
+                        done.append(f"（{digest[:60]}）")
         self._save()
 
         if not done:
             return {"ok": True, "message": f"刷了 {len(items)} 条，没有特别想互动的"}
         return {"ok": True, "message": "；".join(done), "titles": [x["title"] for x in items[:5]]}
+
+    async def _deep_watch(self, item: dict) -> str:
+        """真看一遍：字幕优先，没字幕就抽帧描述画面。"""
+        vw = getattr(self.plugin, "video_watch", None)
+        cfg = self.plugin.config.get("video") or {}
+        if vw is None or not cfg.get("enable", True):
+            return ""
+        bvid = str(item.get("bvid") or "")
+        if not bvid:
+            return ""
+        try:
+            r = await vw.bili(f"https://www.bilibili.com/video/{bvid}", cfg)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[CommunityRadar] B 站深看失败: {exc}")
+            return ""
+        if not r.get("ok"):
+            return ""
+        return f"{r.get('via')}：{str(r.get('digest') or '')[:120]}"
 
     async def _decide(self, items: list[dict]) -> list[dict]:
         """让模型挑 1~2 条它真想互动的，并给评论草稿。"""
@@ -145,14 +181,18 @@ class BiliDuty:
             persona = await self.plugin.duty._bot_persona(self.cfg)
         except Exception:  # noqa: BLE001
             persona = ""
-        lines = [
-            f"- {x.get('bvid')} 《{x.get('title')}》 UP:{x.get('author')} 播放{x.get('play')}"
-            for x in items[:10]
-        ]
+        lines = []
+        for x in items[:10]:
+            line = f"- {x.get('bvid')} 《{x.get('title')}》 UP:{x.get('author')} 播放{x.get('play')}"
+            cs = x.get("_comments") or []
+            if cs:
+                line += "\n  热评：" + " / ".join(cs[:3])
+            lines.append(line)
         prompt = (
             (f"你的人格：\n{persona}\n\n" if persona else "")
-            + "你刚刷 B 站推荐流，看到这些：\n" + "\n".join(lines)
-            + "\n\n挑 0~2 条你真有话想说的。没感觉就返回空数组。"
+            + "你刚刷 B 站推荐流，看到这些（含热评）：\n" + "\n".join(lines)
+            + "\n\n挑 0~3 条你真有话想说的。没感觉就返回空数组。"
+            "判断要基于标题和热评里实际写了什么，不要只看标题。"
             "只输出 JSON 数组，元素形如 "
             '{"bvid":"BV...","like":true,"comment":"一句话评论"}；'
             "评论要口语、短（20 字内），像随口留的，不要客套，不要 emoji。"
@@ -174,7 +214,7 @@ class BiliDuty:
         except Exception:  # noqa: BLE001
             return []
         out = []
-        for x in data[:2] if isinstance(data, list) else []:
+        for x in data[:3] if isinstance(data, list) else []:
             if isinstance(x, dict) and x.get("bvid"):
                 out.append(x)
         return out
