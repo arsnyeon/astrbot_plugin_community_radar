@@ -39,6 +39,12 @@
         "description": "两次浏览的最大间隔（小时）",
         "default": 5.0
       },
+      "only_when_worth": {
+        "type": "bool",
+        "description": "只在真有话说时才发",
+        "hint": "开启后，如果这次逛完觉得内容都很普通，她就不发消息，安安静静地看完；关闭则每次都会说点什么。",
+        "default": true
+      },
       "platforms": {
         "type": "string",
         "description": "浏览哪些社区",

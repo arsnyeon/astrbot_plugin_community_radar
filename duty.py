@@ -515,7 +515,11 @@ class BrowseDuty:
             "- 绝对不要编号、不要列清单、不要「今日精选」「以下是」这类开场白，也别逐条复述标题\n"
             "- 提到的那条，把链接放在句子里自然带出来\n"
             "- 整体控制在 150 字以内，像微信发一段话\n"
-            f"{history_line}\n内容：\n{links}"
+            + (
+                "- 如果这几条都很普通、你没有任何想主动跟他说的话，就只回复 [跳过]，不用硬写。\n"
+                if bool(cfg.get("only_when_worth", True)) else ""
+            )
+            + f"{history_line}\n内容：\n{links}"
         )
         system_prompt = "你在跟朋友聊自己刚刷到的东西。口语化、自然、有个人好恶，不写小作文。"
         try:
@@ -528,8 +532,10 @@ class BrowseDuty:
                 system_prompt=system_prompt,
                 contexts=[],
             )
-            text = getattr(resp, "completion_text", "") or ""
-            return text.strip() or links
+            text = (getattr(resp, "completion_text", "") or "").strip()
+            if "[跳过]" in text or text.strip("[]【】 ") == "跳过":
+                return ""
+            return text or links
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[CommunityRadar] 点评生成失败，退回纯链接: {exc}")
             return links
