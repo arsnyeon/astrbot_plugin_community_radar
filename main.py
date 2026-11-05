@@ -43,7 +43,7 @@ def _fmt_time(ts: int) -> str:
     "astrbot_plugin_community_radar",
     "arsnyeon",
     "社区雷达：自己决定什么时候逛 B 站 / 抖音 / 小黑盒，看得懂视频与图文，会点赞评论回复，也接得住你分享的链接。",
-    "v0.12.7",
+    "v0.13.0",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
@@ -325,12 +325,14 @@ class CommunityRadarPlugin(Star):
     async def bili_status_cmd(self, event: AstrMessageEvent):
         s = self.bili_duty.state()
         t, c = s["today"], s["caps"]
+        skip = s.get("last_skip_reason") or ""
         yield event.plain_result(
             f"B 站自主浏览：{'开' if s['enabled'] else '关'}  "
             f"试运行：{'开' if s['dry_run'] else '关'}  "
             f"自动刷：{'开' if s['auto_browse'] else '关'}\n"
             f"今日 看{t['watched']} 赞{t['like']}/{c['like']} 评{t['comment']}/{c['comment']}\n"
             f"Cookie：{'已填' if s['has_cookie'] else '未填（写操作不可用）'}"
+            + (f"\n上次没动手：{skip}" if skip else "")
         )
 
     @filter.command("b站回复", desc="回复 B 站某条评论")
@@ -466,6 +468,7 @@ class CommunityRadarPlugin(Star):
                 f"{('已核对 ' + s['owner']['nickname']) if s['owner']['confirmed'] else ('未核对' + (('，配置=' + s['owner_input']) if s['owner_input'] else '，配置为空'))}"
                 f"  站内已分享 {s['shared_dy']} 条\n"
                 f"浏览器：{'已连接' if b['connected'] else '未连接'}  {b['browser'] or '未安装'}"
+                + (f"\n上次没动手：{s['last_skip_reason']}" if s.get("last_skip_reason") else "")
             )
             return
 

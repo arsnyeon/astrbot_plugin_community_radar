@@ -137,9 +137,11 @@ def parse_comments(payload: dict, limit: int = 8) -> list[dict]:
         if not text:
             continue
         out.append({
+            "id": str(c.get("cid") or c.get("comment_id") or ""),
             "name": _clean((c.get("user") or {}).get("nickname"), 20),
             "text": text,
             "likes": _num(c.get("digg_count")),
+            "replies": _num(c.get("reply_comment_total")),
         })
     out.sort(key=lambda x: x["likes"], reverse=True)
     return out[:limit]
@@ -527,6 +529,50 @@ class DouyinBrowser:
     @staticmethod
     def _hash_dist(a: str, b: str) -> int:
         return sum(1 for x, y in zip(a, b) if x != y)
+
+    async def reply_comment(self, vid: str, comment_id: str, text: str) -> dict:
+        """回复某条评论：在页面上下文里 POST publish 接口，签名交给抖音自己的脚本。"""
+        if not re.fullmatch(r"\d{8,}", str(vid or "")):
+            raise BrowserError("视频 id 不对")
+        if not re.fullmatch(r"\d{5,}", str(comment_id or "")):
+            raise BrowserError("评论 id 不对")
+        body_text = str(text or "").strip()[:100]
+        if not body_text:
+            raise BrowserError("回复内容是空的")
+        await self.open_video(vid, 0)
+        why = await self.verify()
+        if why:
+            raise BrowserError("要验证：" + why, "verify")
+
+        query = urllib.parse.urlencode({**BASE_PARAMS, "aweme_id": str(vid)})
+        url = f"https://www.douyin.com/aweme/v1/web/comment/publish/?{query}"
+        form = {
+            "aweme_id": str(vid),
+            "text": body_text,
+            "text_extra": "[]",
+            "reply_id": str(comment_id),
+            "reply_to_reply_id": "0",
+            "comment_type": "1",
+        }
+        expr = """async ([u, form]) => {
+            const body = new URLSearchParams(form).toString();
+            const r = await fetch(u, { method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+            return { status: r.status, text: await r.text() };
+        }"""
+        r = await self._page.evaluate(expr, [url, form])
+        if not r or r.get("status") != 200:
+            raise BrowserError(f"回复评论失败（HTTP {r.get('status') if r else '空'}）", "http")
+        try:
+            payload = json.loads(r.get("text") or "{}")
+        except json.JSONDecodeError:
+            raise BrowserError("回复评论返回的不是 JSON", "bad")
+        code = int(payload.get("status_code") or 0)
+        if code in NOT_LOGIN:
+            raise BrowserError("抖音还没登录（用 /抖音 登录 扫码）", "login")
+        if code:
+            raise BrowserError(str(payload.get("status_msg") or f"回复被拒绝({code})"), str(code))
+        return {"ok": True, "cid": str((payload.get("comment") or {}).get("cid") or "")}
 
     async def verify(self) -> str:
         """每次现查验证码，不留标记。"""

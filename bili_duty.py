@@ -98,6 +98,7 @@ class BiliDuty:
             "today": {k: int(self.s.get(k) or 0) for k in ("watched", "like", "comment", "writes")},
             "caps": self._caps(),
             "has_cookie": bool(str(self.plugin.config.get("bili_cookie") or "").strip()),
+            "last_skip_reason": str(self.s.get("last_skip_reason") or ""),
         }
 
     # ── 主体的「刷」 ────────────────────────────────────────────
@@ -122,6 +123,7 @@ class BiliDuty:
                 if aid:
                     cs = await self.plugin.bili.comments(aid, limit=8)
                     it["_comments"] = [str(c.get("text") or "")[:40] for c in cs if c.get("text")]
+                    it["_cids"] = [str(c.get("rpid") or "") for c in cs if c.get("text")]
             except Exception as exc:  # noqa: BLE001
                 logger.debug(f"[CommunityRadar] B 站评论读取失败: {exc}")
 
@@ -134,7 +136,7 @@ class BiliDuty:
             item = next((x for x in items if x.get("bvid") == bvid), None)
             if not item:
                 continue
-            wants_act = bool(action.get("like") or action.get("comment"))
+            wants_act = bool(action.get("like") or action.get("comment") or action.get("reply"))
             digest = await self._deep_watch(item) if wants_act else ""
             if action.get("like"):
                 r = await self.like(bvid)
@@ -147,11 +149,28 @@ class BiliDuty:
                     done.append(f"评论了《{item['title'][:18]}》：{text}")
                     if digest:
                         done.append(f"（{digest[:60]}）")
+            # 回复它觉得有意思的那条评论
+            reply = str(action.get("reply") or "").strip()
+            ridx = action.get("reply_to")
+            if reply and ridx and self._left("comment") > 0:
+                try:
+                    idx = int(ridx) - 1
+                except Exception:  # noqa: BLE001
+                    idx = -1
+                cids = item.get("_cids") or []
+                if 0 <= idx < len(cids) and cids[idx]:
+                    r = await self.reply(bvid, str(cids[idx]), reply)
+                    if r.get("ok"):
+                        done.append(f"回复了评论：{reply}")
         self._save()
 
         if not done:
+            self.s["last_skip_reason"] = "看完了，但没有想互动的"
+            self._save()
             # 定时刷且什么都没做：不打扰
             return {"ok": True, "message": "" if not owner_asked else f"刷了 {len(items)} 条，没特别想互动的"}
+        self.s["last_skip_reason"] = ""
+        self._save()
         msg = "；".join(done)
         if self.cfg.get("dry_run", True) and owner_asked:
             msg += "（试运行，没真操作）"
@@ -190,16 +209,19 @@ class BiliDuty:
             line = f"- {x.get('bvid')} 《{x.get('title')}》 UP:{x.get('author')} 播放{x.get('play')}"
             cs = x.get("_comments") or []
             if cs:
-                line += "\n  评论：" + " / ".join(cs[:5])
+                line += "\n  评论：" + " / ".join(
+                    f"[{j + 1}] {t}" for j, t in enumerate(cs[:5])
+                )
             lines.append(line)
         prompt = (
             (f"你的人格：\n{persona}\n\n" if persona else "")
             + "你刚刷 B 站推荐流，看到这些（含热评）：\n" + "\n".join(lines)
             + "\n\n挑 0~3 条你真有话想说的。没感觉就返回空数组。"
-            "判断要基于标题和热评里实际写了什么，不要只看标题。"
+            "判断要基于标题和评论里实际写了什么，不要只看标题。"
             "只输出 JSON 数组，元素形如 "
-            '{"bvid":"BV...","like":true,"comment":"一句话评论"}；'
-            "评论要口语、短（20 字内），像随口留的，不要客套，不要 emoji。"
+            '{"bvid":"BV...","like":true,"comment":"给视频的评论",'
+            '"reply_to":评论序号(数字,不想回就不写),"reply":"回复那条评论的话"}；'
+            "评论和回复都要口语、短（20 字内），像随口留的，不要客套，不要 emoji。"
         )
         try:
             resp = await provider.text_chat(
@@ -343,18 +365,35 @@ class BiliDuty:
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[CommunityRadar] B 站定时循环异常: {exc}")
 
+    def _next_due_at(self) -> float:
+        """下一次什么时候刷：按作息加权，偶尔整轮跳过。"""
+        base = float(self.cfg.get("interval_hours") or 4)
+        factor = random.uniform(0.6, 1.6)
+        hour = time.localtime().tm_hour
+        if 18 <= hour <= 23:
+            factor *= 0.75
+        elif 2 <= hour <= 6:
+            factor *= 1.8
+        if random.random() < 0.2:
+            factor *= 2.0
+        return time.time() + base * 3600 * factor
+
     async def tick(self) -> None:
         if not self.cfg.get("enabled") or not self.cfg.get("auto_browse"):
             return
-        hours = float(self.cfg.get("interval_hours") or 4)
-        last = float(self.s.get("last_auto_run") or 0)
-        if time.time() - last < hours * 3600:
+        due = float(self.s.get("next_due_at") or 0)
+        if not due:
+            self.s["next_due_at"] = self._next_due_at()
+            self._save()
+            return
+        if time.time() < due:
             return
         try:
             r = await self.browse()
             if r.get("ok") and r.get("message"):
-                await self.plugin.duty._send(f"刚刷了会儿 B 站。{r['message']}", self.plugin.config.get("browse") or {})
+                await self.plugin.duty._send(r["message"], self.plugin.config.get("browse") or {})
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[CommunityRadar] B 站定时浏览异常: {exc}")
         self.s["last_auto_run"] = time.time()
+        self.s["next_due_at"] = self._next_due_at()
         self._save()

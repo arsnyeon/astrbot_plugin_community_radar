@@ -300,7 +300,14 @@ class DouyinDuty:
                 continue
             d["_comments"] = cs
             looked.append(d)
-            digests.append(f"#{len(looked)}\n{digest_of(d, cs)}")
+            numbered = [
+                f"[{j + 1}] {str(c.get('text') or '')[:50]}"
+                for j, c in enumerate(cs[:6]) if c.get("text")
+            ]
+            digest = f"#{len(looked)}\n{digest_of(d, cs)}"
+            if numbered:
+                digest += "\n评论（可回复其中一条）：\n" + "\n".join(numbered)
+            digests.append(digest)
             seen.add(v["aweme_id"])
             self.s["watched"] = int(self.s.get("watched", 0)) + 1
 
@@ -309,12 +316,11 @@ class DouyinDuty:
         self.s["seen"] = list(seen)[-300:]
         self.s["runs"] = int(self.s.get("runs", 0)) + 1
         self.s["last_run"] = time.time()
-        jitter = 0.8 + random.random() * 0.5
-        self.s["next_due_at"] = time.time() + float(self.cfg.get("interval_hours") or 4) * 3600 * jitter
+        self.s["next_due_at"] = self._next_due_at()
         self._save()
 
         decisions = await self._decide(digests, owner_asked)
-        liked = commented = shared = 0
+        liked = commented = shared = replied = 0
         shared_bodies: list[str] = []
         dec_by_i: dict[int, dict] = {}
         for x in decisions:
@@ -362,6 +368,37 @@ class DouyinDuty:
                         self._on_error(exc)
                         if getattr(exc, "code", "") == "verify":
                             break
+
+            # 回复它觉得有意思的那条评论
+            reply_text = _clip(dec.get("reply"), 100)
+            reply_idx = dec.get("reply_to")
+            if reply_text and reply_idx and not self._blocked("comment"):
+                try:
+                    idx = int(reply_idx) - 1
+                except Exception:  # noqa: BLE001
+                    idx = -1
+                cs = d.get("_comments") or []
+                target = cs[idx] if 0 <= idx < len(cs) else None
+                cid = str((target or {}).get("id") or "")
+                if cid:
+                    if dry:
+                        self._record("dry:reply", aweme_id=d["aweme_id"],
+                                     cid=cid, text=reply_text)
+                        replied += 1
+                    else:
+                        try:
+                            await self.b.reply_comment(d["aweme_id"], cid, reply_text)
+                            self.s["comment"] = int(self.s.get("comment", 0)) + 1
+                            self.s["writes"] = int(self.s.get("writes", 0)) + 1
+                            self.s["last_write_at"] = time.time()
+                            self._record("reply", aweme_id=d["aweme_id"],
+                                         cid=cid, text=reply_text)
+                            replied += 1
+                        except BrowserError as exc:
+                            self._on_error(exc)
+                            if getattr(exc, "code", "") == "verify":
+                                break
+
             share_text = _clip(dec.get("share"), 120)
             if share_text and self._left("share") > 0 and not self._paused():
                 r = await self._share(d, share_text, deep)
@@ -377,6 +414,14 @@ class DouyinDuty:
 
         self._save()
 
+        # 记录这轮的心情/理由，供状态查询
+        if not looked:
+            self.s["last_skip_reason"] = "一个视频都没打开"
+        elif not (liked or commented or shared or replied):
+            self.s["last_skip_reason"] = "看完了，但没有想互动的"
+        else:
+            self.s["last_skip_reason"] = ""
+
         # 定时刷：只有在它真想分享时才说话；主人专门让它刷才汇报
         if shared_bodies:
             msg = shared_bodies[0]
@@ -386,6 +431,8 @@ class DouyinDuty:
                 bits.append(f"赞了 {liked} 个")
             if commented:
                 bits.append(f"评了 {commented} 条")
+            if replied:
+                bits.append(f"回了 {replied} 条评论")
             msg = f"刷了 {len(looked)} 个视频"
             msg += ("，" + "、".join(bits)) if bits else "，没特别想互动的"
             if self.cfg.get("dry_run", True):
@@ -394,17 +441,20 @@ class DouyinDuty:
             msg = ""
 
         return {"ok": True, "message": msg, "watched": len(looked), "liked": liked,
-                "commented": commented, "shared": shared, "titles": [v["title"] for v in looked]}
+                "commented": commented, "shared": shared, "replied": replied,
+                "titles": [v["title"] for v in looked]}
 
     async def _decide(self, digests: list[str], owner_asked: bool) -> list[dict]:
         """让模型按人格决定点赞/评论/分享。失败就退化为「只看不动手」。"""
         prompt = (
-            "你刚刷了一会儿抖音，下面每条都带了文案和热评。"
+            "你刚刷了一会儿抖音，下面每条都带了文案和评论。"
             "挑 0~3 条你真有话说、真想互动的（没感觉就返回空数组），每条给一个对象："
             '{"i":序号, "feeling":"一句真实感受", "like":true/false, '
-            '"comment":"想发的评论（像普通观众，一两句，不想评就空字符串）", '
+            '"comment":"给视频的评论（像普通观众，一两句，不想评就空字符串）", '
+            '"reply_to":想回复的评论序号(数字, 不想回就不写), "reply":"回复那条评论的话", '
             '"share":"特别想让主人看时写一句推荐语，不想分享就空字符串"}。\n'
-            "判断要基于文案和热评里实际写了什么，不要只看标题。\n"
+            "判断要基于文案和评论里实际写了什么，不要只看标题。"
+            "回复评论要像在评论区跟人搭话，口语、简短，不要客套。\n"
             + (f"这次最多点赞 {self._left('like')} 个、评论 {self._left('comment')} 个、分享 {self._left('share')} 个。" if not self.cfg.get("dry_run", True) else "")
             + ("主人专门让你找视频，至少挑一个写 share。" if owner_asked else "")
             + "只输出 JSON 数组，不要解释。\n\n" + "\n\n".join(digests)
@@ -529,6 +579,19 @@ class DouyinDuty:
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[CommunityRadar] 抖音 SSR 兜底失败: {exc}")
         return ""
+
+    def _next_due_at(self) -> float:
+        """下一次什么时候刷：按作息加权，偶尔整轮跳过。"""
+        base = float(self.cfg.get("interval_hours") or 4)
+        factor = random.uniform(0.6, 1.6)
+        hour = datetime.datetime.now().hour
+        if 18 <= hour <= 23:      # 晚上更爱刷
+            factor *= 0.75
+        elif 2 <= hour <= 6:      # 凌晨懒得动
+            factor *= 1.8
+        if random.random() < 0.2:  # 有时就是不想刷
+            factor *= 2.0
+        return time.time() + base * 3600 * factor
 
     async def _pick_comments(self, comments: list[dict], limit: int = 3) -> list[str]:
         """按自己的人格挑它觉得有意思的评论；挑不出来就退回点赞最高的几条。"""
@@ -788,6 +851,7 @@ class DouyinDuty:
                 "sec_uid": (self.s.get("owner") or {}).get("sec_uid", ""),
             },
             "shared_dy": len(self.s.get("shared_dy") or []),
+            "last_skip_reason": str(self.s.get("last_skip_reason") or ""),
             "browser": self.b.state(),
             "next_run": datetime.datetime.fromtimestamp(self.s["next_due_at"]).strftime("%Y-%m-%d %H:%M")
             if self.s.get("next_due_at") else "未排期",
