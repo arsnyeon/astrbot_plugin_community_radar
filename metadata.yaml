@@ -3,7 +3,7 @@ display_name: 社区雷达
 short_desc: 自己决定什么时候逛 B 站 / 抖音 / 小黑盒，看得懂视频与图文，会点赞评论回复，也接得住你分享的链接。
 desc: "社区雷达：让机器人自己决定什么时候逛 B 站、抖音、小黑盒，按人格和最近看过的东西挑选内容；看得懂视频与图文（B 站字幕/抽帧、抖音分享页、小黑盒正文与配图）；能在 B 站和抖音点赞、发评论、回复，并把有意思的内容主动私聊分享给你；有人分享社区链接时会先看懂再接话。所有写操作都有试运行、每日上限与最小间隔。"
 help: "命令：/社区雷达（状态）、/社区雷达 逛、/刷b站、/b站状态、/b站回复、/看视频、/抖音 帮助、/b站搜索、/小黑盒。LLM 工具：bili_*、heybox_*、douyin_*、radar_share、radar_watch_video。"
-version: v0.13.2
+version: v0.13.3
 author: arsnyeon
 repo: https://github.com/arsnyeon/astrbot_plugin_community_radar
 astrbot_version: ">=4.16,<5"

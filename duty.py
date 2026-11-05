@@ -120,9 +120,9 @@ class BrowseDuty:
         rng = self._quiet_range(quiet)
         if not rng:
             return ts
-        start, _ = rng
+        _, end = rng
         dt = datetime.datetime.fromtimestamp(ts)
-        target = dt.replace(hour=start, minute=0, second=0, microsecond=0)
+        target = dt.replace(hour=end, minute=0, second=0, microsecond=0)
         if target <= dt:
             target += datetime.timedelta(days=1)
         return target.timestamp()
