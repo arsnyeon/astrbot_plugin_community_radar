@@ -43,7 +43,7 @@ def _fmt_time(ts: int) -> str:
     "astrbot_plugin_community_radar",
     "arsnyeon",
     "社区雷达：自己决定什么时候逛 B 站 / 抖音 / 小黑盒，看得懂视频与图文，会点赞评论回复，也接得住你分享的链接。",
-    "v0.13.0",
+    "v0.13.1",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
@@ -337,6 +337,9 @@ class CommunityRadarPlugin(Star):
 
     @filter.command("b站回复", desc="回复 B 站某条评论")
     async def bili_reply_cmd(self, event: AstrMessageEvent, arg: GreedyStr):
+        if not self._is_owner(event):
+            yield event.plain_result("这个操作只有主人能用。")
+            return
         parts = (arg or "").strip().split(" ", 2)
         if len(parts) < 3:
             yield event.plain_result("用法：/b站回复 BV号 评论rpid 回复内容")
@@ -382,6 +385,12 @@ class CommunityRadarPlugin(Star):
 
     @filter.command("b站发评论", alias={"B站发评论"}, desc="在 B 站视频下发评论")
     async def bili_comment_cmd(self, event: AstrMessageEvent, arg: GreedyStr):
+        if not self._is_owner(event):
+            yield event.plain_result("这个操作只有主人能用。")
+            return
+        if bool((self.config.get("bili") or {}).get("dry_run", True)):
+            yield event.plain_result("试运行：没真发评论（bili.dry_run 开着）。")
+            return
         arg = (arg or "").strip()
         if " " not in arg:
             yield event.plain_result("用法：/b站发评论 BV号 评论内容")
@@ -400,6 +409,12 @@ class CommunityRadarPlugin(Star):
 
     @filter.command("b站点赞", alias={"B站点赞"}, desc="给 B 站视频点赞")
     async def bili_like_cmd(self, event: AstrMessageEvent, bvid: GreedyStr):
+        if not self._is_owner(event):
+            yield event.plain_result("这个操作只有主人能用。")
+            return
+        if bool((self.config.get("bili") or {}).get("dry_run", True)):
+            yield event.plain_result("试运行：没真点赞（bili.dry_run 开着）。")
+            return
         bvid = (bvid or "").strip()
         vid = find_video_id(bvid)
         if not vid or "short" in vid:
@@ -414,6 +429,9 @@ class CommunityRadarPlugin(Star):
 
     @filter.command("小黑盒发帖", alias={"heybox发帖"}, desc="在小黑盒发帖")
     async def heybox_post_cmd(self, event: AstrMessageEvent, arg: GreedyStr):
+        if not self._is_owner(event):
+            yield event.plain_result("这个操作只有主人能用。")
+            return
         arg = (arg or "").strip()
         if " " not in arg:
             yield event.plain_result("用法：/小黑盒发帖 标题 正文（默认分区盒友杂谈 7214）")
@@ -692,6 +710,10 @@ class CommunityRadarPlugin(Star):
     @filter.llm_tool(name="bili_comment")
     async def _t_bili_comment(self, event: AstrMessageEvent, bvid: str, message: str) -> str:
         """在 B 站视频下发评论。bvid 为 BV 号，message 为评论内容。需要已在插件配置里填 B 站 Cookie。"""
+        if not self._is_owner(event):
+            return "只有主人才能让我去发评论。"
+        if bool((self.config.get("bili") or {}).get("dry_run", True)):
+            return "试运行：没真发评论（bili.dry_run 开着）。"
         try:
             info = await self.bili.view(bvid)
             r = await self.bili.post_comment(str(info["aid"]), message)
@@ -702,6 +724,10 @@ class CommunityRadarPlugin(Star):
     @filter.llm_tool(name="bili_like")
     async def _t_bili_like(self, event: AstrMessageEvent, bvid: str) -> str:
         """给 B 站视频点赞。bvid 为 BV 号。需要已在插件配置里填 B 站 Cookie。"""
+        if not self._is_owner(event):
+            return "只有主人才能让我去点赞。"
+        if bool((self.config.get("bili") or {}).get("dry_run", True)):
+            return "试运行：没真点赞（bili.dry_run 开着）。"
         try:
             info = await self.bili.view(bvid)
             await self.bili.like_video(str(info["aid"]))
@@ -712,6 +738,8 @@ class CommunityRadarPlugin(Star):
     @filter.llm_tool(name="heybox_comment")
     async def _t_heybox_comment(self, event: AstrMessageEvent, link_id: str, text: str) -> str:
         """在小黑盒帖子下评论。link_id 为帖子 ID，text 为评论内容。需要已填小黑盒 Cookie。"""
+        if not self._is_owner(event):
+            return "只有主人才能让我去评论。"
         try:
             await self.heybox.comment_link(link_id, text)
             return "评论已发。"
@@ -721,6 +749,8 @@ class CommunityRadarPlugin(Star):
     @filter.llm_tool(name="heybox_like")
     async def _t_heybox_like(self, event: AstrMessageEvent, link_id: str) -> str:
         """给小黑盒帖子点赞。link_id 为帖子 ID。需要已填小黑盒 Cookie。"""
+        if not self._is_owner(event):
+            return "只有主人才能让我去点赞。"
         try:
             await self.heybox.like_link(link_id)
             return "已点赞。"
@@ -730,6 +760,8 @@ class CommunityRadarPlugin(Star):
     @filter.llm_tool(name="heybox_post")
     async def _t_heybox_post(self, event: AstrMessageEvent, title: str, text: str, topic_id: str = "7214") -> str:
         """在小黑盒发帖。title 为标题，text 为正文，topic_id 为分区（7214=盒友杂谈、18745=数码硬件、806933=AI）。需要已填小黑盒 Cookie。"""
+        if not self._is_owner(event):
+            return "只有主人才能让我去发帖。"
         try:
             r = await self.heybox.post_text(title, text, topic_id)
             return f"发帖成功：{r['url']}" if r.get("url") else "发帖成功，但没拿到帖子编号。"
