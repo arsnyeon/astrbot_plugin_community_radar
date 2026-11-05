@@ -460,11 +460,24 @@ class DouyinBrowser:
             return []
 
         dur = float(info.get("duration") or 0)
-        count = max(1, min(int(count), 5))
+        count = max(1, min(int(count), 8))
         width = min(float(info["width"]), 1280)
         height = min(float(info["height"]), 860)
         box = {"x": max(0.0, float(info["x"])), "y": max(0.0, float(info["y"])),
                "width": max(100.0, width), "height": max(100.0, height)}
+
+        # 预热：先播一下并等元数据就绪，避免前几帧截成黑屏
+        try:
+            await page.evaluate(self.SEEK_MAIN_JS, 0.3)
+            for _ in range(12):
+                await asyncio.sleep(0.6)
+                warm = await page.evaluate(self.MAIN_VIDEO_JS)
+                if warm and warm.get("rs", 0) >= 2 and warm.get("vw", 0) > 0:
+                    if float(warm.get("duration") or 0) > 0:
+                        dur = float(warm["duration"])
+                    break
+        except Exception:  # noqa: BLE001
+            pass
 
         out: list[str] = []
         hashes: list[str] = []

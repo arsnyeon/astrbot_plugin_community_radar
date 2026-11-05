@@ -434,22 +434,27 @@ class DouyinDuty:
     # ── 分享（抖音站内私信 / QQ / 两边）──────────────────────────
 
     async def _deep_watch(self, v: dict) -> str:
-        """真看一遍：优先截真实播放器画面交给视觉模型，SSR 只作兜底。"""
+        """真看一遍：截多帧画面交给视觉模型 + 读评论区，SSR 只作兜底。"""
         vw = getattr(self.plugin, "video_watch", None)
         cfg = self.plugin.config.get("video") or {}
         if vw is None or not cfg.get("enable", True):
             return ""
 
+        vid = str(v.get("aweme_id") or "")
+        parts: list[str] = []
+
+        # 1) 画面：多截几帧
         frames: list[str] = []
         try:
-            frames = await self.b.grab_frames(str(v.get("aweme_id") or ""), int(cfg.get("frames") or 3))
+            want = int(cfg.get("frames") or 5)
+            frames = await self.b.grab_frames(vid, want)
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[CommunityRadar] 抖音截帧失败: {exc}")
         if frames:
             try:
                 caption = await vw._caption(frames, cfg)
                 if caption:
-                    return f"（画面）{caption[:500]}"
+                    parts.append(f"画面：{caption.strip()[:600]}")
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[CommunityRadar] 抖音画面描述失败: {exc}")
             finally:
@@ -461,6 +466,23 @@ class DouyinDuty:
                     except Exception:  # noqa: BLE001
                         pass
 
+        # 2) 评论区：点赞最高的几条
+        try:
+            cs = await self.b.comments(vid)
+            if cs:
+                top = cs[:6]
+                parts.append("热评：\n" + "\n".join(
+                    f"  {c.get('name') or '匿名'}：{c.get('text') or ''}"
+                    + (f"（{c.get('likes')}赞）" if c.get("likes") else "")
+                    for c in top
+                ))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[CommunityRadar] 抖音评论读取失败: {exc}")
+
+        if parts:
+            return "\n".join(parts)
+
+        # 3) 兜底：SSR
         url = str(v.get("url") or "")
         if url:
             try:

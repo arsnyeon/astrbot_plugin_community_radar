@@ -338,8 +338,8 @@
       "frames": {
         "type": "int",
         "description": "抽几帧",
-        "hint": "2~4 帧通常够判断视频在讲什么，越多越慢。",
-        "default": 3
+        "hint": "按视频时长均匀取帧，最多 8 帧。帧越多画面信息越全，但更慢、更耗 token。",
+        "default": 5
       },
       "provider_id": {
         "type": "string",
