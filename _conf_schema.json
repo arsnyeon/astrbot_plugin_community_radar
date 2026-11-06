@@ -491,6 +491,12 @@
         "hint": "默认 1.2 秒，实际会在基础上加一点随机抖动，避免机械感。",
         "default": 1.2
       },
+      "style": {
+        "type": "string",
+        "description": "分享方式",
+        "hint": "forward = 像转发一样，一句反应 + 原链接；summary = 多聊几句内容再给链接。",
+        "default": "forward"
+      },
       "auto_followup": {
         "type": "bool",
         "description": "分享后自动带上摘要",
