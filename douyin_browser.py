@@ -215,13 +215,8 @@ class DouyinBrowser:
         }
 
     def _find_browser(self) -> str:
-        if self.browser_path:
-            return self.browser_path if Path(self.browser_path).exists() else ""
-        for name in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "microsoft-edge"):
-            p = shutil.which(name)
-            if p:
-                return p
-        return ""
+        from .browser_runtime import find_browser
+        return find_browser(self.browser_path)
 
     async def _cdp_alive(self) -> bool:
         try:
@@ -239,12 +234,21 @@ class DouyinBrowser:
                 from playwright.async_api import async_playwright
             except ImportError:
                 raise BrowserError(
-                    "没装 playwright。在 astrbot 容器里执行：pip install playwright && "
-                    "PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright/ playwright install chromium",
+                    "请在 AstrBot 使用的 Python 环境执行 python -m pip install playwright。"
+                    "Windows 可直接复用已安装的 Edge/Chrome，无需 playwright install chromium。",
                     "deps",
                 )
+            if await self._cdp_alive() and not (self._chrome_proc and self._chrome_proc.poll() is None):
+                raise BrowserError("CDP 端口已被其他进程占用；不会接管个人浏览器。请修改 COMMUNITY_RADAR_CDP_PORT。", "port")
             if not await self._cdp_alive():
-                await self._launch()
+                try:
+                    await self._launch()
+                except BaseException:
+                    for proc in (self._chrome_proc, self._xvfb_proc):
+                        if proc and proc.poll() is None:
+                            await asyncio.to_thread(self._stop_proc, proc)
+                    self._chrome_proc = self._xvfb_proc = None
+                    raise
             self._pw = await async_playwright().start()
             self._browser = await self._pw.chromium.connect_over_cdp(
                 f"http://127.0.0.1:{self.port}", timeout=15000
@@ -272,7 +276,7 @@ class DouyinBrowser:
         env = dict(os.environ)
         disp_num = self.display.lstrip(":").split(".")[0]
         sock = Path(f"/tmp/.X11-unix/X{disp_num}")
-        if not sock.exists():
+        if os.name != "nt" and not sock.exists():
             xvfb = shutil.which("Xvfb")
             if not xvfb:
                 raise BrowserError("找不到 Xvfb（无头会被抖音拦），请先安装 xvfb", "deps")
@@ -307,9 +311,13 @@ class DouyinBrowser:
             "--window-size=1280,860", "--window-position=-2400,-2400",
             "about:blank",
         ]
+        from .browser_runtime import process_options
+        if os.name == "nt":
+            env.pop("DISPLAY", None)
+            args = [a for a in args if a not in ("--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage")]
         self._chrome_proc = subprocess.Popen(
             args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
-            start_new_session=True,
+            **process_options(),
         )
         for _ in range(60):
             if await self._cdp_alive():
@@ -349,6 +357,17 @@ class DouyinBrowser:
         import os
         import signal
 
+        if os.name == "nt":
+            # Only the PID launched by this plugin, never kill by browser image name.
+            if proc.poll() is None:
+                try:
+                    subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+                    proc.wait(timeout=5)
+                    return
+                except Exception:
+                    pass
         try:
             pgid = os.getpgid(proc.pid)
         except Exception:  # noqa: BLE001

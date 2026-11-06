@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="CHANGELOG.md">更新日志</a> ·
-  <a href="UPDATE_v0.15.md">v0.15 详细说明</a> ·
+  <a href="CHANGELOG.md">v0.15 详细说明</a> ·
   <a href="LICENSE">MIT License</a>
 </p>
 
@@ -31,7 +31,7 @@
 - **互动**：B 站、抖音、小黑盒的点赞、评论、回复、发帖；默认试运行，全部有每日上限与最小间隔。
 - **扩展玩法**：浏览周记、番剧本地追踪、按问题定向补看、关注 UP 更新候选、白名单通知/私信回复。
 
-详细的 v0.15 命令与边界见 [UPDATE_v0.15.md](UPDATE_v0.15.md)。
+详细的 v0.15 命令与边界见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 安装
 
@@ -55,6 +55,20 @@ https://github.com/arsnyeon/astrbot_plugin_community_radar
 | 小黑盒互动 | 小黑盒 Cookie（`heybox_cookie`） |
 
 只看不互动时，B 站、小黑盒不需要登录；抖音热榜也不需要。
+
+### Windows 桌面运行
+
+原生 Windows 下优先寻找已安装的 Edge，其次 Chrome（常用安装目录、注册表、PATH）。无需 Xvfb，也无需下载 Playwright 的 Chromium 内核；但仍需在 **AstrBot 实际使用的 Python 环境** 安装 `playwright` 包：
+
+```powershell
+python -m pip install playwright
+```
+
+自动检测失败可设置 `COMMUNITY_RADAR_BROWSER_PATH` 为浏览器完整路径。插件使用自己的 `douyin-profile`，不会读取个人默认浏览器资料；第一次仍须登录。默认尽量隐藏窗口，二维码仍可通过原有登录命令获取。窗口是否短暂出现受浏览器版本影响，不保证完全无界面。
+
+CDP 仅绑定本机；端口被非本插件进程占用时拒绝接管，可用 `COMMUNITY_RADAR_CDP_PORT` 换端口。仅关闭本插件启动的进程，不按浏览器名称批量结束进程。
+
+Windows 上的 Docker/WSL 部署仍走 Linux 路径，不能直接调用 Windows 桌面浏览器。Linux 保留 Chromium + Xvfb 方案。Windows 分支需实机验证登录与播放，不以模拟测试替代平台端到端验证。
 
 ## 快速配置
 
@@ -123,7 +137,7 @@ https://github.com/arsnyeon/astrbot_plugin_community_radar
 ## 更新
 
 - [CHANGELOG.md](CHANGELOG.md)：逐版本变更
-- [UPDATE_v0.15.md](UPDATE_v0.15.md)：v0.15 的完整命令、配置与边界
+- [CHANGELOG.md](CHANGELOG.md)：v0.15 的完整命令、配置与边界
 
 ## 致谢
 
