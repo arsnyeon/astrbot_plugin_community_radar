@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import re
 import time
 
 from astrbot.api import AstrBotConfig, logger
@@ -30,6 +31,7 @@ from .douyin_duty import DouyinDuty
 from .douyin_feed import DouyinFeed
 from .heybox import HeyboxClient, HeyboxError
 from .link_peek import LinkPeek
+from .topic_watch import TopicWatch
 from .video_watch import VideoWatch
 
 
@@ -43,7 +45,7 @@ def _fmt_time(ts: int) -> str:
     "astrbot_plugin_community_radar",
     "arsnyeon",
     "社区雷达：自己决定什么时候逛 B 站 / 抖音 / 小黑盒，看得懂视频与图文，会点赞评论回复，也接得住你分享的链接。",
-    "v0.13.3",
+    "v0.14.0",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
@@ -54,6 +56,7 @@ class CommunityRadarPlugin(Star):
         self.heybox = HeyboxClient(cookie=str(self.config.get("heybox_cookie", "")))
         self.bili_duty = BiliDuty(self)
         self.bili_duty.start()
+        self.topic_watch = TopicWatch(self)
         self.duty = BrowseDuty(self)
         self.duty.start()
         self.douyin_cfg = dict(self.config.get("douyin") or {})
@@ -81,6 +84,21 @@ class CommunityRadarPlugin(Star):
             except Exception:  # noqa: BLE001
                 pass
         logger.info("CommunityRadar plugin stopped.")
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def _on_any_message(self, event: AstrMessageEvent):
+        """群聊 / 私聊里聊到的东西，攒成「她也想去看看」的话题队列。
+
+        这里只做记账，不产生回复；预筛在 TopicWatch 内部完成，
+        大部分消息不会触达模型。
+        """
+        cfg = self.config.get("topic") or {}
+        if not cfg.get("enable", True):
+            return
+        try:
+            await self.topic_watch.observe(event)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[CommunityRadar] 话题监听跳过: {exc}")
 
     @filter.on_llm_request()
     async def _on_community_link(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -601,6 +619,8 @@ class CommunityRadarPlugin(Star):
         sub = str(arg or "").strip().lower()
         cfg = self.config.get("browse") or {}
         if sub in ("", "状态", "status"):
+            plan = self.duty.autopilot.plan(cfg, topics=self.topic_watch.queue(4))
+            topic_line = self.topic_watch.brief(4) or "还没有"
             yield event.plain_result(
                 f"自动浏览：{'开' if cfg.get('enable') else '关'}"
                 f"  下次：{self.duty.next_run_text()}\n"
@@ -609,7 +629,10 @@ class CommunityRadarPlugin(Star):
                 f"关键词来源：{cfg.get('interests_mode') or 'auto'}"
                 f"  平台：{cfg.get('platforms') or 'all'}"
                 f"  每次搜 {cfg.get('search_per_run', 2)} 个\n"
-                f"最近搜过：{'、'.join(self.duty._recent_keywords(6)) or '还没有'}"
+                f"这轮打算：{plan.get('reason') or '随便逛逛'}"
+                f"（{'、'.join(plan.get('platforms') or []) or '无'}）\n"
+                f"最近搜过：{'、'.join(self.duty._recent_keywords(6)) or '还没有'}\n"
+                f"想去看看的话题：\n{topic_line}"
             )
             return
         if sub in ("逛", "现在逛", "go", "now"):
@@ -627,7 +650,28 @@ class CommunityRadarPlugin(Star):
                 + f"这会儿想搜：{'、'.join(words) if words else '（没生成出来，看日志）'}"
             )
             return
-        yield event.plain_result("用法：/社区雷达（状态）\n/社区雷达 兴趣（看它现在想搜什么）")
+        if sub in ("话题", "topic", "queue"):
+            brief = self.topic_watch.brief(8)
+            yield event.plain_result(
+                ("聊天里攒下的、她想去看看的：\n" + brief) if brief
+                else "现在没有攒下的话题。多聊点具体的东西，她自己会记。"
+            )
+            return
+        if sub in ("清话题", "清空话题", "topic clear"):
+            if not self._is_owner(event):
+                yield event.plain_result("只有主人能清话题队列。")
+                return
+            self.topic_watch._save([])
+            yield event.plain_result("话题队列清空了。")
+            return
+        yield event.plain_result(
+            "用法：\n"
+            "/社区雷达（看状态与想去的话题）\n"
+            "/社区雷达 逛（现在就去逛）\n"
+            "/社区雷达 兴趣（看它这会儿想搜什么）\n"
+            "/社区雷达 话题（看聊天里攒下的话题）\n"
+            "/社区雷达 清话题（清空话题队列）"
+        )
 
     @filter.command("看视频", alias={"b站看视频", "看懂"}, desc="让它看懂一条 B 站 / 抖音 / 小黑盒的内容")
     async def watch_video_cmd(self, event: AstrMessageEvent, ref: GreedyStr):
@@ -772,14 +816,15 @@ class CommunityRadarPlugin(Star):
 
     @filter.llm_tool(name="radar_share")
     async def _t_radar_share(
-        self, event: AstrMessageEvent, title: str, url: str = "", comment: str = ""
+        self, event: AstrMessageEvent, title: str, url: str = "", comment: str = "", image: str = ""
     ) -> str:
-        """把一条你觉得有趣的社区内容主动私聊分享给主人。
+        """把一条你觉得有趣的社区内容分享出去（默认私聊主人，也可以在当前群里说）。
 
         Args:
             title(string): 内容标题或一句话概括
             url(string): 原链接
             comment(string): 你想顺带说的那句话（可选）
+            image(string): 想一起发出去的图片地址（可选，封面/截图都行）
         """
         name = str(title or "").strip()
         if not name:
@@ -789,9 +834,6 @@ class CommunityRadarPlugin(Star):
         ok, why = self._share_allowed()
         if not ok:
             return why
-        umo = self._owner_umo()
-        if not umo:
-            return "没配置主人 QQ 号，没法私聊分享"
         text = f"看到个有意思的：《{name[:60]}》"
         note = str(comment or "").strip()
         if note:
@@ -799,8 +841,36 @@ class CommunityRadarPlugin(Star):
         link = str(url or "").strip()
         if link:
             text += f"\n{link}"
+
+        chain: list = [Plain(text)]
+        pic = str(image or "").strip()
+        if not pic:
+            # 没显式给图，就尝试从链接里挖一张
+            try:
+                from .autopilot import Autopilot
+
+                if link:
+                    item: dict = {}
+                    m = re.search(r"/video/(BV\w+)", link)
+                    if m:
+                        v = await self.bili.view(m.group(1))
+                        item = {"pic": v.get("pic")}
+                    pic = Autopilot.image_of(item)
+            except Exception:  # noqa: BLE001
+                pic = ""
+        if pic.startswith("http"):
+            try:
+                from astrbot.core.message.components import Image
+
+                chain.append(Image.fromURL(pic))
+            except Exception:  # noqa: BLE001
+                pass
+
+        umo = self._owner_umo()
+        if not umo:
+            return "没配置主人 QQ 号，没法私聊分享"
         try:
-            await self.context.send_message(umo, MessageChain([Plain(text)]))
+            await self.context.send_message(umo, MessageChain(chain))
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[CommunityRadar] 主动分享失败: {exc}")
             return f"分享失败：{exc}"

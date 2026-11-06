@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""定时浏览 B 站 / 小黑盒 / 抖音：按兴趣主动搜索、带自己的想法点评、推给主人。
+"""定时浏览 B 站 / 小黑盒 / 抖音：自己决定逛哪、搜什么、说给谁听。
 
 设计目标是「她自己在逛社区」，而不是「把榜单贴一遍」：
-- 除热门 / 信息流 / 热榜外，会挑感兴趣的关键词主动搜索；
-- 点评由模型按自己的偏好决定聊哪几条、为什么在意，允许整段跳过没兴趣的；
+- 逛哪个平台、偏重哪儿，由 autopilot 按话题倾向和平台权重决定；
+- 群聊 / 私聊里刚聊过的东西会进话题队列，下次优先去搜；
+- 点评由模型按自己的偏好决定聊哪几条、为什么在意，允许整段跳过；
+- 看到有意思的内容会带上封面 / 配图，不只是丢链接；
+- 除了私聊主人，也可以顺手在群里说一句；
 - 记住最近看过什么，下一次不重复聊同样的角度。
 """
 from __future__ import annotations
@@ -19,8 +22,10 @@ from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
-from astrbot.core.message.components import Plain
+from astrbot.core.message.components import Image, Plain
 from astrbot.core.message.message_event_result import MessageChain
+
+from .autopilot import PLATFORM_LABEL, Autopilot
 
 DEFAULT_PERSONA = (
     "你是一个爱逛社区、有自己偏好和判断的人。看到对胃口的会多聊两句，"
@@ -47,6 +52,19 @@ def _parse_keyword_array(text: str) -> list[str]:
     return out
 
 
+def _parse_pick_object(text: str) -> dict:
+    """解析模型给出的 {say, pick, skip} JSON；解析失败返回空 dict。"""
+    s = str(text or "")
+    m = re.search(r"\{[\s\S]*\}", s)
+    if not m:
+        return {}
+    try:
+        data = json.loads(m.group(0))
+    except Exception:  # noqa: BLE001
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 class BrowseDuty:
     def __init__(self, plugin: Any):
         self.plugin = plugin
@@ -54,6 +72,7 @@ class BrowseDuty:
         self._done: dict[str, set[str]] = {}
         self._history_file = self._data_dir() / "browse_history.json"
         self._state_file = self._data_dir() / "browse_state.json"
+        self.autopilot = Autopilot(plugin)
 
     @staticmethod
     def _data_dir() -> Path:
@@ -217,50 +236,74 @@ class BrowseDuty:
     # ── 一次浏览 ────────────────────────────────────────────────
 
     async def _run(self, cfg: dict) -> None:
-        platforms = str(cfg.get("platforms") or "all").lower()
         count = max(1, int(cfg.get("count") or 5))
         mode = str(cfg.get("mode") or "summary").lower()
         per_run = max(0, int(cfg.get("search_per_run") or 2))
+
+        # 先去把还压着的话题扫出来，这样这一轮就能用上
+        topic_watch = getattr(self.plugin, "topic_watch", None)
+        if topic_watch is not None:
+            try:
+                await topic_watch.flush(self.plugin.config.get("topic") or {})
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"[CommunityRadar] 话题队列补扫失败: {exc}")
+            topics = topic_watch.queue(4)
+        else:
+            topics = []
+
+        plan = self.autopilot.plan(cfg, topics=topics)
+        platforms = plan["platforms"]
+        if not platforms:
+            return
+        logger.info(
+            f"[CommunityRadar] 这轮逛：{plan['reason']}｜平台={platforms}"
+            f"｜搜={plan['keywords'] or '（模型自己定）'}"
+        )
 
         bili_items: list[dict] = []
         heybox_items: list[dict] = []
         douyin_items: list[dict] = []
 
-        # 先拿到三个平台“眼前有什么”
-        if platforms in ("bili", "both", "all"):
+        # 先拿到平台「眼前有什么」
+        if "bili" in platforms:
             try:
                 bili_items = await self.plugin.bili.popular(count)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[CommunityRadar] 拉 B 站热门失败: {exc}")
 
-        if platforms in ("heybox", "both", "all"):
+        if "heybox" in platforms:
             try:
                 heybox_items = (await self.plugin.heybox.feed(0))[:count]
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[CommunityRadar] 拉小黑盒信息流失败: {exc}")
 
-        if platforms in ("douyin", "all") and getattr(self.plugin, "douyin_feed", None):
+        if "douyin" in platforms and getattr(self.plugin, "douyin_feed", None):
             try:
                 douyin_items = await self.plugin.douyin_feed.hot(count)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[CommunityRadar] 拉抖音热榜失败: {exc}")
 
-        # 再让模型按自己的人格 + 刚看到的内容决定「我现在想搜什么」
+        # 再让模型按自己的人格 + 刚看到的内容 + 话题队列，决定「我现在想搜什么」
         picks = await self._pick_keywords(cfg, bili_items, heybox_items, douyin_items, per_run)
+        if plan["keywords"]:
+            merged = list(dict.fromkeys(plan["keywords"] + picks))[: max(per_run, len(plan["keywords"]))]
+            picks = merged
 
-        if platforms in ("bili", "both", "all"):
+        if "bili" in platforms:
             bili_items = await self._search(self.plugin.bili, "search", picks, bili_items, count)
 
-        if platforms in ("heybox", "both", "all"):
+        if "heybox" in platforms:
             heybox_items = await self._search(self.plugin.heybox, "search", picks, heybox_items, count)
 
         # 只看标题点评不出来，先把前几条的正文 / 热评抓回来
-        await self._enrich("bili", bili_items, limit=3)
-        await self._enrich("heybox", heybox_items, limit=3)
+        total = len(bili_items) + len(heybox_items) + len(douyin_items)
+        limit = self.autopilot.enrich_limit(cfg, plan, total)
+        await self._enrich("bili", bili_items, limit=limit)
+        await self._enrich("heybox", heybox_items, limit=limit)
 
         if douyin_items and picks:
             for x in douyin_items:
-                if any(k in x["title"] for k in picks):
+                if any(k in str(x.get("title") or "") for k in picks):
                     x["_via"] = "合口味"
             douyin_items.sort(key=lambda x: (x.get("_via") != "合口味", x.get("rank", 99)))
 
@@ -268,14 +311,26 @@ class BrowseDuty:
             return
 
         self._record_history({"B站": bili_items, "小黑盒": heybox_items, "抖音": douyin_items})
+        # 这轮用掉了的话题，从队列划掉，别下次重复去搜
+        if topic_watch is not None and picks:
+            try:
+                topic_watch.consume(picks)
+            except Exception:  # noqa: BLE001
+                pass
+
         if mode == "summary":
-            text = await self._summarize(bili_items, heybox_items, cfg, douyin_items, picks)
+            text, picked = await self._summarize(
+                bili_items, heybox_items, cfg, douyin_items, picks,
+                plan=plan, topics=topics,
+            )
         else:
-            text = self._links(bili_items, heybox_items, douyin_items)
+            text, picked = self._links(bili_items, heybox_items, douyin_items), []
 
         if not text:
             return
-        await self._send(text, cfg)
+
+        image_url = self.autopilot.pick_image(cfg, picked)
+        await self._send(text, cfg, image_url=image_url, context_items=picked)
 
     async def _enrich(self, platform: str, items: list[dict], limit: int = 3) -> None:
         """给前几条补正文与热评，让点评基于内容而不是标题。"""
@@ -286,6 +341,8 @@ class BrowseDuty:
                     it["_body"] = str(v.get("desc") or "")[:400]
                     it["_stats"] = f"播放{v.get('play')} 点赞{v.get('like')}"
                     it["_link"] = f"https://www.bilibili.com/video/{v.get('bvid') or it['bvid']}"
+                    if not it.get("pic"):
+                        it["pic"] = str(v.get("pic") or "")
                     # 有字幕的话顺带读一眼，比简介信息量大得多
                     try:
                         sub = await self.plugin.bili.subtitles(
@@ -361,7 +418,7 @@ class BrowseDuty:
         return picks
 
     async def _auto_keywords(self, cfg: dict, candidates: list[str]) -> list[str]:
-        """让模型按自己的人格和最近看到的东西，生成这次想搜的关键词。"""
+        """让模型按自己的人格、最近看到的东西和话题队列，生成这次想搜的关键词。"""
         provider = await self._resolve_provider(cfg)
         if provider is None:
             return []
@@ -372,6 +429,18 @@ class BrowseDuty:
         parts = ["你在决定自己接下来想搜什么。"]
         if persona:
             parts.append("你的人格设定：\n" + persona)
+        topic_brief = ""
+        try:
+            tw = getattr(self.plugin, "topic_watch", None)
+            if tw is not None:
+                topic_brief = tw.brief(4)
+        except Exception:  # noqa: BLE001
+            topic_brief = ""
+        if topic_brief:
+            parts.append(
+                "最近聊天里聊到、你当时就想去搜一下的：\n" + topic_brief
+                + "\n如果这些还想跟，就直接用它们当关键词。"
+            )
         if history:
             parts.append("你最近看过的：\n" + history)
         if used:
@@ -496,60 +565,137 @@ class BrowseDuty:
                 lines.append(f"- {x.get('rank')}. {x.get('title')}{via(x)}{hot_part} {x.get('url')}")
         return "\n".join(lines)
 
-    async def _summarize(self, bili: list[dict], heybox: list[dict], cfg: dict,
-                         douyin: list[dict] | None = None,
-                         interests: list[str] | None = None) -> str:
+    async def _summarize(
+        self,
+        bili: list[dict],
+        heybox: list[dict],
+        cfg: dict,
+        douyin: list[dict] | None = None,
+        interests: list[str] | None = None,
+        *,
+        plan: dict | None = None,
+        topics: list[dict] | None = None,
+    ) -> tuple[str, list[dict]]:
+        """让模型自己挑着聊。返回 (文案, 被挑中的条目)。"""
+        plan = plan or {}
+        topics = topics or []
+        candidates = self._ordered(plan, bili, heybox, douyin or [])
         links = self._links(bili, heybox, douyin)
         if not links:
-            return ""
+            return "", []
+
         persona = str(cfg.get("persona") or "").strip() or DEFAULT_PERSONA
         interest_line = ("你最近比较在意的：" + "、".join(interests or []) + "。") if interests else ""
         history = self._recent_history(6)
         history_line = ("\n你之前看过这些，别用同样的角度再聊一遍：\n" + history + "\n") if history else ""
-        prompt = (
+
+        topic_line = ""
+        if topics:
+            topic_line = (
+                "\n你这次本来是想去看这些的（聊天里聊到的）：\n"
+                + "\n".join(f"- {t.get('keyword')}：{t.get('why') or '想看看'}" for t in topics[:3])
+                + "\n如果你确实看到了相关的东西，优先说这个。\n"
+            )
+
+        numbered = self._numbered_candidates(candidates)
+        intro = (
             "【这不是任务清单，是你自己刚逛完社区、想跟朋友随口说两句】\n"
             f"{persona}\n{interest_line}\n"
-            "下面几条都带了简介和热评，你可以据此判断内容到底是什么：\n"
+        )
+        if plan.get("focus"):
+            intro += f"你这轮主要在刷{PLATFORM_LABEL.get(plan['focus'], plan['focus'])}。\n"
+        intro += "下面每条都带编号，带了简介和热评，你可以据此判断内容到底是什么：\n"
+
+        prompt = (
+            intro
+            + "要求：\n"
             "- 只聊你真正有感觉的 1~2 条，其余完全不用提，不用凑数\n"
-            "- 说清为什么在意、想到什么、或者想吐槽什么\n"
-            "- 绝对不要编号、不要列清单、不要「今日精选」「以下是」这类开场白，也别逐条复述标题\n"
+            "- 说清为什么在意、想到什么、或者想吐槽什么；可以顺带提一句评论区\n"
+            "- 绝对不要编号罗列、不要「今日精选」「以下是」这类开场白，也别逐条复述标题\n"
             "- 提到的那条，把链接放在句子里自然带出来\n"
-            "- 整体控制在 150 字以内，像微信发一段话\n"
+            "- 整体 100~200 字，像微信发一段话，不要小作文\n"
             + (
-                "- 如果这几条都很普通、你没有任何想主动跟他说的话，就只回复 [跳过]，不用硬写。\n"
+                "- 如果这几条都很普通、你没有任何想主动说的话，就把 say 留空、skip 设为 true。\n"
                 if bool(cfg.get("only_when_worth", True)) else ""
             )
-            + f"{history_line}\n内容：\n{links}"
+            + topic_line
+            + history_line
+            + "\n"
+            '只输出一个 JSON 对象：{"say":"你要说的话","pick":编号或0,"skip":false}\n'
+            "pick 填你最想配图的那一条的编号，没有合适配图就填 0。\n\n"
+            f"内容：\n{numbered}"
         )
-        system_prompt = "你在跟朋友聊自己刚刷到的东西。口语化、自然、有个人好恶，不写小作文。"
+        system_prompt = "你在跟朋友聊自己刚刷到的东西。口语化、自然、有个人好恶，不写小作文。只输出 JSON。"
+
+        picked: list[dict] = []
         try:
             provider = await self._resolve_provider(cfg)
             if provider is None:
-                return links
+                return links, []
             resp = await provider.text_chat(
                 prompt=prompt,
                 session_id=self._default_target(cfg),
                 system_prompt=system_prompt,
                 contexts=[],
             )
-            text = (getattr(resp, "completion_text", "") or "").strip()
-            if "[跳过]" in text or text.strip("[]【】 ") == "跳过":
-                return ""
-            return text or links
+            raw = (getattr(resp, "completion_text", "") or "").strip()
+            data = _parse_pick_object(raw)
+            if data:
+                if data.get("skip"):
+                    return "", []
+                text = str(data.get("say") or "").strip()
+                try:
+                    idx = int(data.get("pick") or 0)
+                except Exception:  # noqa: BLE001
+                    idx = 0
+                if 1 <= idx <= len(candidates):
+                    picked = [candidates[idx - 1]]
+                if not text:
+                    return "", picked
+                return text, picked
+            # 模型没按 JSON 来，就按纯文本兜底
+            if "[跳过]" in raw or raw.strip("[]【】 ") == "跳过":
+                return "", []
+            return raw or links, []
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[CommunityRadar] 点评生成失败，退回纯链接: {exc}")
-            return links
+            return links, []
 
-    async def _resolve_provider(self, cfg: dict) -> Any:
-        provider_id = str(cfg.get("ai_provider_id") or "").strip()
-        ctx = self.plugin.context
-        if provider_id:
-            return ctx.get_provider_by_id(provider_id)
-        umo = self._default_target(cfg)
-        try:
-            return await ctx.get_using_provider_async(umo)
-        except Exception:  # noqa: BLE001
-            return ctx.get_using_provider(umo)
+    @staticmethod
+    def _ordered(plan: dict, bili: list[dict], heybox: list[dict], douyin: list[dict]) -> list[dict]:
+        """按本轮偏重的平台排序，让编号里前面的更可能是她想聊的。"""
+        buckets = {"bili": bili, "heybox": heybox, "douyin": douyin}
+        focus = str(plan.get("focus") or "")
+        order = list(buckets)
+        if focus in buckets:
+            order = [focus] + [p for p in order if p != focus]
+        out: list[dict] = []
+        for p in order:
+            out += list(buckets.get(p) or [])
+        return out[:12]
+
+    @staticmethod
+    def _numbered_candidates(items: list[dict]) -> str:
+        lines: list[str] = []
+        for i, it in enumerate(items, 1):
+            lines.append(f"[{i}] 《{it.get('title') or '无标题'}》 {it.get('_stats') or ''}")
+            body = str(it.get("_body") or it.get("desc") or "").strip()
+            if body:
+                lines.append(f"    简介：{body[:200]}")
+            comments = it.get("_comments") or []
+            if comments:
+                lines.append("    热评：" + " / ".join(comments[:3]))
+            link = str(it.get("_link") or "")
+            if not link:
+                if it.get("bvid"):
+                    link = f"https://www.bilibili.com/video/{it['bvid']}"
+                elif it.get("link_id"):
+                    link = f"https://www.xiaoheihe.cn/app/bbs/link/{it['link_id']}"
+                else:
+                    link = str(it.get("url") or "")
+            if link:
+                lines.append(f"    链接：{link}")
+        return "\n".join(lines)
 
     def _default_target(self, cfg: dict) -> str:
         targets = [str(t).strip() for t in (cfg.get("targets") or []) if str(t).strip()]
@@ -576,16 +722,65 @@ class BrowseDuty:
             pass
         return "default"
 
-    async def _send(self, text: str, cfg: dict) -> None:
-        targets = [str(t).strip() for t in (cfg.get("targets") or []) if str(t).strip()]
+    async def _resolve_provider(self, cfg: dict) -> Any:
+        provider_id = str(cfg.get("ai_provider_id") or "").strip()
+        ctx = self.plugin.context
+        if provider_id:
+            return ctx.get_provider_by_id(provider_id)
+        umo = self._default_target(cfg)
+        try:
+            return await ctx.get_using_provider_async(umo)
+        except Exception:  # noqa: BLE001
+            return ctx.get_using_provider(umo)
+
+    # ── 投递 ────────────────────────────────────────────────────
+
+    async def _send(
+        self,
+        text: str,
+        cfg: dict,
+        *,
+        image_url: str = "",
+        context_items: list[dict] | None = None,
+    ) -> None:
+        group_cfg = self.plugin.config.get("group_share") or {}
+        targets = self.autopilot.targets(cfg, group_cfg=group_cfg)
         if not targets:
-            targets = [self._default_target(cfg)]
+            logger.warning("[CommunityRadar] 未配置「主人账号」或「推送目标」，跳过本次推送")
+
+        # 群聊是「顺便说一句」，决定一次，所有群共用
+        want_group = self.autopilot.wants_group(cfg, group_cfg)
+        owner_plat = self._platform_name()
+        owner_umo = ""
+        admin = str(self.plugin.config.get("admin_uin") or "").strip()
+        if admin:
+            owner_umo = f"{owner_plat}:FriendMessage:{admin}"
+
         for umo in targets:
             if not umo or umo.endswith(":"):
-                logger.warning("[CommunityRadar] 未配置「主人账号」或「推送目标」，跳过本次推送")
                 continue
+            is_group = ":GroupMessage:" in umo
+            if is_group and not want_group:
+                logger.debug(f"[CommunityRadar] 跳过群分享 {umo}（本轮没抽中）")
+                continue
+            chain: list[Any] = [Plain(text)]
+            if image_url:
+                try:
+                    chain.append(Image.fromURL(image_url))
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(f"[CommunityRadar] 配图不可用，只发文字: {exc}")
             try:
-                await self.plugin.context.send_message(umo, MessageChain([Plain(text)]))
+                await self.plugin.context.send_message(umo, MessageChain(chain))
                 logger.info(f"[CommunityRadar] 已推送定时浏览到 {umo}")
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[CommunityRadar] 推送到 {umo} 失败: {exc}")
+                if image_url:
+                    try:
+                        await self.plugin.context.send_message(umo, MessageChain([Plain(text)]))
+                        logger.info(f"[CommunityRadar] 去掉配图后重发成功 {umo}")
+                    except Exception as exc2:  # noqa: BLE001
+                        logger.warning(f"[CommunityRadar] 纯文字重发也失败 {umo}: {exc2}")
+
+        if owner_umo and owner_umo not in targets and want_group:
+            # 群里说过了，也留一份在这儿，别让她「背着你说话」
+            logger.debug(f"[CommunityRadar] owner 已在 targets 中或本轮未分享，跳过重复投递 {owner_umo}")

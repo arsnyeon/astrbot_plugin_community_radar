@@ -105,6 +105,125 @@
         "hint": "留空则使用当前会话的默认对话模型。",
         "default": "",
         "_special": "select_provider"
+      },
+      "attach_image": {
+        "type": "bool",
+        "description": "浏览时带一张配图",
+        "hint": "开启后，她发出来的那条会附上内容封面（B 站封面 / 小黑盒配图），不只是干巴巴的链接。配图取不到或发送失败会自动退回纯文字。",
+        "default": true
+      },
+      "deep_read_when_topic": {
+        "type": "bool",
+        "description": "跟话题时多看几条",
+        "hint": "如果这轮是因为聊天里提到才去搜的，会多补几条正文与热评，聊得更准；关掉则和随便逛一样只补 2 条。",
+        "default": true
+      },
+      "enrich_max": {
+        "type": "int",
+        "description": "最多补几条正文",
+        "hint": "单次浏览最多给多少条内容补正文 / 热评分。补得越多越准，也越慢。",
+        "default": 5
+      },
+      "platform_weights": {
+        "type": "object",
+        "description": "平台偏好权重",
+        "hint": "没有具体话题时，按权重随机决定这轮更想刷哪个平台。数值 1~5，越大越常去。",
+        "items": {
+          "bili": {
+            "type": "int",
+            "description": "B 站权重",
+            "default": 3
+          },
+          "heybox": {
+            "type": "int",
+            "description": "小黑盒权重",
+            "default": 3
+          },
+          "douyin": {
+            "type": "int",
+            "description": "抖音权重",
+            "default": 2
+          }
+        }
+      }
+    }
+  },
+  "topic": {
+    "type": "object",
+    "description": "话题监听",
+    "hint": "她会从群聊 / 私聊里留意「自己也想去看一眼」的东西，记成待搜话题，下次浏览优先去搜。只做记录，不会因为它插话。",
+    "items": {
+      "enable": {
+        "type": "bool",
+        "description": "启用话题监听",
+        "default": true
+      },
+      "min_chars": {
+        "type": "int",
+        "description": "最短多少字才看",
+        "hint": "太短的消息基本没信息量，直接跳过。",
+        "default": 6
+      },
+      "max_chars": {
+        "type": "int",
+        "description": "最长多少字才看",
+        "hint": "超长的多半是粘贴的公告或代码，不当话题。",
+        "default": 120
+      },
+      "batch_size": {
+        "type": "int",
+        "description": "攒几条问一次模型",
+        "hint": "条数越多越省调用，但话题会滞后一点。默认 4。",
+        "default": 4
+      },
+      "scan_cooldown_sec": {
+        "type": "int",
+        "description": "同一会话两次判断的间隔（秒）",
+        "hint": "避免群里聊得热闹时反复调用模型。默认 180 秒。",
+        "default": 180
+      },
+      "ttl_hours": {
+        "type": "int",
+        "description": "话题保留多久（小时）",
+        "hint": "超过这个时间还没去搜就丢掉，避免越攒越多。默认 12 小时。",
+        "default": 12
+      },
+      "ignore_sessions": {
+        "type": "list",
+        "description": "不监听的会话",
+        "hint": "填完整会话标识，例如某些不想让她跟着联想的群。",
+        "default": []
+      },
+      "ai_provider_id": {
+        "type": "string",
+        "description": "判断话题用的模型",
+        "hint": "留空则用当前默认对话模型。这个判断调用很轻，用便宜快的模型就够。",
+        "default": "",
+        "_special": "select_provider"
+      }
+    }
+  },
+  "group_share": {
+    "type": "object",
+    "description": "群聊分享",
+    "hint": "除了私聊主人，也允许她在群里顺便说一句。群里只在她真有话说、且抽中时才发，不会每次都刷屏。",
+    "items": {
+      "enable": {
+        "type": "bool",
+        "description": "允许在群里分享",
+        "default": false
+      },
+      "sessions": {
+        "type": "list",
+        "description": "允许分享的群",
+        "hint": "填群号或完整会话标识（平台名:GroupMessage:群号）。留空则只私聊主人。",
+        "default": []
+      },
+      "probability": {
+        "type": "float",
+        "description": "每个群被选中的概率",
+        "hint": "0~1。默认 0.35 表示大约三次浏览里有一次会顺带在群里说。",
+        "default": 0.35
       }
     }
   },
@@ -215,9 +334,21 @@
         "description": "每日互动上限",
         "hint": "分别限制每类互动的次数。",
         "items": {
-          "like": { "type": "int", "description": "每天最多点赞", "default": 10 },
-          "comment": { "type": "int", "description": "每天最多评论", "default": 5 },
-          "share": { "type": "int", "description": "每天最多分享", "default": 3 }
+          "like": {
+            "type": "int",
+            "description": "每天最多点赞",
+            "default": 10
+          },
+          "comment": {
+            "type": "int",
+            "description": "每天最多评论",
+            "default": 5
+          },
+          "share": {
+            "type": "int",
+            "description": "每天最多分享",
+            "default": 3
+          }
         }
       },
       "ai_provider_id": {
@@ -266,8 +397,16 @@
         "type": "object",
         "description": "每日互动上限",
         "items": {
-          "like": { "type": "int", "description": "每天最多点赞", "default": 3 },
-          "comment": { "type": "int", "description": "每天最多评论", "default": 2 }
+          "like": {
+            "type": "int",
+            "description": "每天最多点赞",
+            "default": 3
+          },
+          "comment": {
+            "type": "int",
+            "description": "每天最多评论",
+            "default": 2
+          }
         }
       },
       "min_write_gap_sec": {

@@ -51,6 +51,18 @@ def _enc(value: Any) -> str:
     return quote(v, safe="")
 
 
+def _fix_pic(url: Any) -> str:
+    """B 站封面地址可能是 // 开头或 http，统一成能发的 https 链接。"""
+    s = str(url or "").strip()
+    if not s:
+        return ""
+    if s.startswith("//"):
+        return "https:" + s
+    if s.startswith("http://"):
+        return "https://" + s[len("http://"):]
+    return s if s.startswith("https://") else ""
+
+
 def parse_cookie(raw: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for part in str(raw or "").split(";"):
@@ -167,6 +179,7 @@ class BiliClient:
                 "pubdate": int(v.get("pubdate") or 0),
                 "duration": v.get("duration"),
                 "desc": re.sub(r"<[^>]+>", "", v.get("description") or "")[:200],
+                "pic": _fix_pic(v.get("pic")),
             })
         return out
 
@@ -197,6 +210,7 @@ class BiliClient:
                 "like": int(stat.get("like") or 0),
                 "desc": str(it.get("desc") or "")[:200],
                 "duration": it.get("duration"),
+                "pic": _fix_pic(it.get("pic")),
             })
         return out
 
@@ -216,6 +230,7 @@ class BiliClient:
                 "play": int(stat.get("view") or 0),
                 "pubdate": int(v.get("pubdate") or 0),
                 "desc": str(v.get("desc") or "")[:200],
+                "pic": _fix_pic(v.get("pic")),
             })
         return out
 
@@ -238,6 +253,7 @@ class BiliClient:
             "pubdate": int(d.get("pubdate") or 0),
             "duration": d.get("duration"),
             "tname": d.get("tname"),
+            "pic": _fix_pic(d.get("pic")),
         }
 
     async def _post_form(self, url: str, data: dict) -> Any:
