@@ -1,9 +1,9 @@
 name: astrbot_plugin_community_radar
 display_name: 社区雷达
-short_desc: 自己逛 B 站 / 抖音 / 小黑盒，跟着聊天话题挑内容，看得懂视频与图文，会带图分享。
+short_desc: 自己逛 B 站 / 抖音 / 小黑盒，跟着聊天话题挑内容，看得懂视频与图文，会带图分条分享。
 desc: "让机器人自己逛 B 站、抖音、小黑盒：按人格与聊天话题挑内容，看得懂视频与图文，会带封面分享，也能点赞、评论、回复。写操作默认试运行，有每日上限与最小间隔。"
 help: "命令：/社区雷达、/社区雷达 逛、/雷达记忆、/雷达兴趣、/雷达活动、/雷达周记、/雷达补看、/看视频、/刷b站、/抖音 帮助。"
-version: v0.15.1
+version: v0.16.0
 author: arsnyeon
 repo: https://github.com/arsnyeon/astrbot_plugin_community_radar
 astrbot_version: ">=4.16,<5"

@@ -472,6 +472,24 @@
         "type": "int",
         "description": "每天最多分享几条",
         "default": 8
+      },
+      "segment": {
+        "type": "bool",
+        "description": "分成几条短消息发",
+        "hint": "开启后由模型自己决定拆成 1~3 条，像 QQ 聊天一样分条发送；关闭则合成一段。平台侧评论仍保持单条，不会被拆成多条评论。",
+        "default": true
+      },
+      "segment_max": {
+        "type": "int",
+        "description": "最多分几条",
+        "hint": "建议 2~4 条；拆得太多会像刷屏。",
+        "default": 3
+      },
+      "segment_delay": {
+        "type": "float",
+        "description": "分条之间的间隔（秒）",
+        "hint": "默认 1.2 秒，实际会在基础上加一点随机抖动，避免机械感。",
+        "default": 1.2
       }
     }
   },

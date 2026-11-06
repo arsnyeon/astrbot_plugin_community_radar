@@ -36,6 +36,7 @@ from .link_peek import LinkPeek
 from .topic_watch import TopicWatch
 from .video_watch import VideoWatch
 from .radar_core import RadarStore, RadarAI, Cognition, RadarMemoryAPI, verified
+from .radar_explore import RadarExploreAPI
 from .radar_services import RadarServices
 
 
@@ -49,7 +50,7 @@ def _fmt_time(ts: int) -> str:
     "astrbot_plugin_community_radar",
     "arsnyeon",
     "自己逛 B 站 / 抖音 / 小黑盒，跟着聊天话题挑内容，看得懂视频与图文，会带图分享。",
-    "v0.15.1",
+    "v0.16.0",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
@@ -61,6 +62,7 @@ class CommunityRadarPlugin(Star):
         self.radar_ai = RadarAI(self)
         self.cognition = Cognition(self)
         self.radar_memory_api = RadarMemoryAPI(self)
+        self.radar_explore_api = RadarExploreAPI(self)
         self.services = RadarServices(self)
         self.bili = BiliClient(cookie=str(self.config.get("bili_cookie", "")))
         self.heybox = HeyboxClient(cookie=str(self.config.get("heybox_cookie", "")))
@@ -821,6 +823,9 @@ class CommunityRadarPlugin(Star):
         if not target:
             return "未配置主人账号"
         text = f"《{str(title)[:80]}》\n{str(comment)[:300]}\n{str(url)[:500]}".strip()
+        thought = str(comment or "").strip()
+        source = f"《{str(title)[:80]}》 {str(url)[:500]}".strip()
+        text = (thought + "\n" + source) if thought else source
         cfg = dict(self.config.get("browse") or {}, targets=[target])
         sent = await self.duty._send(text, cfg, image_url=image if image.startswith("https://") else "",
                                      context_items=[{"url": url}])

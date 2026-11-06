@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## v0.16.0
+
+- 分享与点评改为可分条发送：模型自己决定拆成 1~3 条短消息，按间隔和随机抖动逐条发，像聊天而不是任务汇报；平台侧评论仍保持单条。
+- 新增 `share.segment` / `segment_max` / `segment_delay`；配图只附在最后一条。
+- 新增只读 `radar_explore_api`：其他插件可按话题检索 B 站与小黑盒，返回标题、简介和链接；不写记忆、不发消息、不点赞评论。
+- Windows 复用已安装 Edge/Chrome：跳过 Xvfb、不下载 Chromium 内核，使用独立资料目录，按自有 PID 清理。
+- 文档合并：v0.15 详细说明并入本文件，不再维护单独更新文档。
+
 ## v0.15.1
 
 - Windows 自动探测现有 Edge/Chrome，跳过 Xvfb，不下载额外浏览器内核。

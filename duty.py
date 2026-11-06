@@ -326,7 +326,7 @@ class BrowseDuty:
         if str(cfg.get("mode") or "summary") == "summary":
             text, picked = await self._summarize(bili, heybox, cfg, douyin, picks, plan=plan, topics=topics)
         else:
-            text, picked = self._links(bili, heybox, douyin), understood[:1]
+            text, picked = [self._links(bili, heybox, douyin)], understood[:1]
         # Read old history before creating this round's summary, then record only understood items.
         self._record_history({"已理解": understood})
         self.plugin.radar_store.set("last_browse", {"at": time.time(), "analyzed": len(understood), "shared": bool(text)})
@@ -575,14 +575,14 @@ class BrowseDuty:
         *,
         plan: dict | None = None,
         topics: list[dict] | None = None,
-    ) -> tuple[str, list[dict]]:
-        """让模型自己挑着聊。返回 (文案, 被挑中的条目)。"""
+    ) -> tuple[list[str], list[dict]]:
+        """让模型自己挑着聊，并决定分几条发。返回 (消息列表, 被挑中的条目)。"""
         plan = plan or {}
         topics = topics or []
         candidates = self._ordered(plan, bili, heybox, douyin or [])
         links = self._links(bili, heybox, douyin)
         if not links:
-            return "", []
+            return [], []
 
         persona = await self._bot_persona(cfg) or DEFAULT_PERSONA
         interest_line = ("你最近比较在意的：" + "、".join(interests or []) + "。") if interests else ""
@@ -613,16 +613,16 @@ class BrowseDuty:
             "- 说清为什么在意、想到什么、或者想吐槽什么；可以顺带提一句评论区\n"
             "- 绝对不要编号罗列、不要「今日精选」「以下是」这类开场白，也别逐条复述标题\n"
             "- 提到的那条，把链接放在句子里自然带出来\n"
-            "- 整体 100~200 字，像微信发一段话，不要小作文\n"
+            "- 像 QQ 聊天一样，可以分成 1~3 条短消息，每条一两句；不要编号、不要长段落\n"
             + (
-                "- 如果这几条都很普通、你没有任何想主动说的话，就把 say 留空、skip 设为 true。\n"
+                "- 如果这几条都很普通、你没有任何想主动说的话，把 messages 留空、skip 设为 true。\n"
                 if bool(cfg.get("only_when_worth", True)) else ""
             )
             + topic_line
             + history_line
             + "\n"
-            '只输出一个 JSON 对象：{"say":"你要说的话","pick":编号或0,"skip":false}\n'
-            "pick 填你最想配图的那一条的编号，没有合适配图就填 0。\n\n"
+            '只输出一个 JSON 对象：{"messages":["第一条","第二条"],"pick":编号或0,"skip":false}\n'
+            "messages 最多 3 条，按你自己想怎么发就怎么发；pick 填你最想配图的那一条编号，没有就填 0。\n\n"
             f"内容：\n{numbered}"
         )
         system_prompt = "你在跟朋友聊自己刚刷到的东西。口语化、自然、有个人好恶，不写小作文。只输出 JSON。"
@@ -633,24 +633,51 @@ class BrowseDuty:
             data = parse_json(raw)
             if data:
                 if data.get("skip") is True:
-                    return "", []
-                text = str(data.get("say") or "").strip()
+                    return [], []
+                messages = data.get("messages")
+                if isinstance(messages, list):
+                    parts = [str(x).strip() for x in messages if str(x).strip()]
+                else:
+                    parts = self._split_chat(str(data.get("say") or "").strip())
+                parts = self._clean_parts(parts, int(cfg.get("segment_max") or 3))
                 try:
                     idx = int(data.get("pick") or 0)
                 except Exception:  # noqa: BLE001
                     idx = 0
                 if 1 <= idx <= len(candidates):
                     picked = [candidates[idx - 1]]
-                if not text:
-                    return "", picked
-                return text, picked
+                return parts, picked
             # 模型没按 JSON 来，就按纯文本兜底
             if "[跳过]" in raw or raw.strip("[]【】 ") == "跳过":
-                return "", []
-            return "", []
+                return [], []
+            return self._clean_parts(self._split_chat(raw.strip()), int(cfg.get("segment_max") or 3)), []
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[CommunityRadar] 点评生成未完成，本轮保持安静（{type(exc).__name__}）")
-            return "", []
+            return [], []
+
+    @staticmethod
+    def _split_chat(text: str, max_parts: int = 3) -> list[str]:
+        """把一段话切成聊天式短句；模型没给数组时的兜底。"""
+        s = str(text or "").strip()
+        if not s:
+            return []
+        raw = re.split(r"(?<=[。！？!?])\s*|\n+", s)
+        out = [piece.strip() for piece in raw if piece.strip()]
+        return BrowseDuty._clean_parts(out, max_parts)
+
+    @staticmethod
+    def _clean_parts(parts: list[str], max_parts: int = 3) -> list[str]:
+        cleaned: list[str] = []
+        for part in (parts or []):
+            part = str(part or "").strip()
+            if not part:
+                continue
+            if len(part) > 300:
+                part = part[:300].rstrip()
+            cleaned.append(part)
+        if len(cleaned) > max_parts:
+            cleaned = cleaned[:max_parts - 1] + ["\n".join(cleaned[max_parts - 1:])]
+        return cleaned
 
     @staticmethod
     def _ordered(plan: dict, bili: list[dict], heybox: list[dict], douyin: list[dict]) -> list[dict]:
@@ -733,8 +760,15 @@ class BrowseDuty:
         group_cfg = self.plugin.config.get("group_share") or {}
         targets = self.autopilot.targets(cfg, group_cfg=group_cfg)
         want_group = self.autopilot.wants_group(cfg, group_cfg)
+        parts = text if isinstance(text, list) else self._split_chat(str(text or ""))
+        parts = self._clean_parts(parts, int(share_cfg.get("segment_max") or 3))
+        if not share_cfg.get("segment", True):
+            parts = ["\n".join(parts)]
+        if not parts:
+            return False
         keys = sorted({content_id(str(it.get("_link") or it.get("url") or "")) for it in context_items or []} - {""})
-        key = "|".join(keys) if keys else "text:" + __import__("hashlib").sha256(text.encode()).hexdigest()
+        key = "|".join(keys) if keys else "text:" + __import__("hashlib").sha256("\n".join(parts).encode()).hexdigest()
+        delay = max(0.0, min(5.0, float(share_cfg.get("segment_delay") or 1.2)))
         delivered = False
         for target in targets:
             if ":GroupMessage:" in target and not want_group:
@@ -744,19 +778,32 @@ class BrowseDuty:
                 number(share_cfg, "cooldown_sec", 600, 0, 86400))
             if not token:
                 continue
-            parts = [Plain(text)]
-            if image_url:
-                try:
-                    parts.append(Image.fromURL(image_url))
-                except Exception:
-                    pass
+            sent = 0
             try:
-                result = await self.plugin.context.send_message(target, MessageChain(parts))
-                self.plugin.radar_store.finish(token, "failed" if result is False else "success")
-                delivered = delivered or result is not False
+                for index, part in enumerate(parts):
+                    chain = [Plain(part)]
+                    if image_url and index == len(parts) - 1:
+                        try:
+                            chain.append(Image.fromURL(image_url))
+                        except Exception:
+                            pass
+                    result = await self.plugin.context.send_message(target, MessageChain(chain))
+                    if result is False:
+                        break
+                    sent += 1
+                    if index < len(parts) - 1 and delay:
+                        await asyncio.sleep(delay + random.random() * 0.6)
+                if sent == len(parts):
+                    self.plugin.radar_store.finish(token, "success")
+                    delivered = True
+                elif sent:
+                    # Some bubbles went out; never resend the whole set.
+                    self.plugin.radar_store.finish(token, "unknown")
+                else:
+                    self.plugin.radar_store.finish(token, "failed")
             except BaseException as exc:
                 # A transport exception cannot prove the platform did not send it.
-                self.plugin.radar_store.finish(token, "unknown", type(exc).__name__)
+                self.plugin.radar_store.finish(token, "unknown")
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 logger.warning("[CommunityRadar] 分享结果未知，未重复投递")
