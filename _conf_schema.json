@@ -490,6 +490,23 @@
         "description": "分条之间的间隔（秒）",
         "hint": "默认 1.2 秒，实际会在基础上加一点随机抖动，避免机械感。",
         "default": 1.2
+      },
+      "auto_followup": {
+        "type": "bool",
+        "description": "分享后自动带上摘要",
+        "hint": "分享后的短时间内，同一会话的追问会自动带上标题、链接和摘要，不必等模型自己想起来查记忆。",
+        "default": true
+      },
+      "followup_minutes": {
+        "type": "int",
+        "description": "摘要跟随追问的窗口（分钟）",
+        "default": 45
+      },
+      "group_recall_minutes": {
+        "type": "int",
+        "description": "群聊可回忆本群分享的时长（分钟）",
+        "hint": "只回忆本群分享过的内容，不读取私聊或其他群的内容。",
+        "default": 180
       }
     }
   },

@@ -27,6 +27,7 @@ from astrbot.core.message.message_event_result import MessageChain
 
 from .autopilot import PLATFORM_LABEL, Autopilot
 from .radar_core import content_id, number, verified, parse_json
+from .radar_session import remember as remember_session
 
 DEFAULT_PERSONA = (
     "你是一个爱逛社区、有自己偏好和判断的人。看到对胃口的会多聊两句，"
@@ -795,6 +796,7 @@ class BrowseDuty:
                         await asyncio.sleep(delay + random.random() * 0.6)
                 if sent == len(parts):
                     self.plugin.radar_store.finish(token, "success")
+                    remember_session(self.plugin.radar_store, target, context_items or [])
                     delivered = True
                 elif sent:
                     # Some bubbles went out; never resend the whole set.

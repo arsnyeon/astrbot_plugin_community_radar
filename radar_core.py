@@ -423,6 +423,31 @@ class Cognition:
                          f"当时感想：{row['evaluation'].get('review') or '未评价'}\n{row['url']}")
         return "\n\n".join(lines) or "还没有相关的内容记忆。"
 
+    def recall_ids(self, ids, query="", limit=5) -> str:
+        """Recall only content already shared in this session."""
+        rows, seen = [], set()
+        for cid in ids or []:
+            if cid in seen:
+                continue
+            seen.add(cid)
+            row = self.store.memory(str(cid))
+            if not row:
+                continue
+            haystack = f"{row['title']}\n{row['result'].get('digest', '')}"
+            if query and str(query) not in haystack:
+                continue
+            rows.append(row)
+            if len(rows) >= limit:
+                break
+        if not rows:
+            return "这个会话里还没有相关的内容记忆。"
+        return "\n\n".join(
+            f"《{row['title']}》 [{row['result'].get('status', 'metadata_only')}]\n"
+            f"{str(row['result'].get('digest') or '')[:900]}\n"
+            f"当时感想：{row['evaluation'].get('review') or '未评价'}\n{row['url']}"
+            for row in rows
+        )
+
     async def weekly(self, days=7) -> str:
         records = [r for r in self.store.recent(days, 60) if verified(r["result"])]
         if not records:

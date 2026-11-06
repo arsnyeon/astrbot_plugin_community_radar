@@ -37,6 +37,7 @@ from .topic_watch import TopicWatch
 from .video_watch import VideoWatch
 from .radar_core import RadarStore, RadarAI, Cognition, RadarMemoryAPI, verified
 from .radar_explore import RadarExploreAPI
+from .radar_session import recent as recent_session_share, ids as session_share_ids
 from .radar_services import RadarServices
 
 
@@ -50,7 +51,7 @@ def _fmt_time(ts: int) -> str:
     "astrbot_plugin_community_radar",
     "arsnyeon",
     "自己逛 B 站 / 抖音 / 小黑盒，跟着聊天话题挑内容，看得懂视频与图文，会带图分享。",
-    "v0.16.0",
+    "v0.16.1",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
@@ -118,6 +119,30 @@ class CommunityRadarPlugin(Star):
             await self.topic_watch.observe(event)
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"[CommunityRadar] 话题监听跳过: {exc}")
+
+    def _recent_share(self, umo: str) -> dict | None:
+        minutes = float((self.config.get("share") or {}).get("followup_minutes", 45) or 45)
+        return recent_session_share(self.radar_store, umo, minutes)
+
+    @filter.on_llm_request()
+    async def _on_recent_share(self, event: AstrMessageEvent, req: ProviderRequest):
+        """刚分享过内容时，把摘要带进当前会话，方便用户直接追问细节。"""
+        if not (self.config.get("share") or {}).get("auto_followup", True):
+            return
+        try:
+            umo = str(event.unified_msg_origin or "")
+            entry = self._recent_share(umo)
+            if not entry:
+                return
+            lines = ["【你刚在这个会话分享过的内容，用户可能追问细节；据此回答，不确定就说明局限】"]
+            for item in entry.get("items", [])[:2]:
+                lines.append(f"- 《{item.get('title')}》 {item.get('url')}")
+                if item.get("digest"):
+                    lines.append(f"  摘要：{str(item['digest'])[:500]}")
+            lines.append("不要编造摘要之外的情节；需要核实原片时可让主人用 /雷达补看。")
+            req.system_prompt = ((req.system_prompt or "") + "\n" + "\n".join(lines)).strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[CommunityRadar] 最近分享注入跳过: {exc}")
 
     @filter.on_llm_request()
     async def _on_community_link(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -1027,14 +1052,21 @@ class CommunityRadarPlugin(Star):
 
     @filter.llm_tool(name="radar_recall")
     async def radar_recall_tool(self, event: AstrMessageEvent, query: str = "") -> str:
-        """查询已经取得内容依据的浏览记忆和当时感想，不重新下载。仅主人可用。
+        """查询已经取得内容依据的浏览记忆和当时感想，不重新下载。
 
         Args:
             query(string): 要回忆的作品、题材或作者；空字符串查询最近记录
         """
-        if not self._is_owner(event):
-            return "当前会话不能查询完整浏览记忆。"
-        return self.cognition.recall(query)
+        if self._is_owner(event):
+            return self.cognition.recall(query)
+        umo = str(event.unified_msg_origin or "")
+        allowed = session_share_ids(
+            self.radar_store, umo,
+            float((self.config.get("share") or {}).get("group_recall_minutes", 180) or 180),
+        )
+        if not allowed:
+            return "当前会话没有分享过可回忆的内容。"
+        return self.cognition.recall_ids(allowed, query)
 
     @filter.llm_tool(name="radar_inspect")
     async def radar_inspect_tool(self, event: AstrMessageEvent, url: str,
