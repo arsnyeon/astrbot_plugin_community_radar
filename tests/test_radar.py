@@ -56,6 +56,17 @@ module("astrbot.core.star")
 module("astrbot.core.star.filter")
 module("astrbot.core.star.filter.command", GreedyStr=str)
 
+class TextPart:
+    def __init__(self, text):
+        self.text = text
+        self._no_save = False
+    def mark_as_temp(self):
+        self._no_save = True
+        return self
+module("astrbot.core.agent")
+module("astrbot.core.agent.message", TextPart=TextPart)
+
+
 core = importlib.import_module("radar_test_plugin.radar_core")
 video = importlib.import_module("radar_test_plugin.video_watch")
 duty = importlib.import_module("radar_test_plugin.duty")
@@ -407,6 +418,15 @@ class PureTests(unittest.TestCase):
         self.assertEqual(core.parse_json('{"a":1} garbage'), {})
         self.assertEqual(core.number({"limit":0},"limit",3,0,10),0)
         self.assertEqual(core.number({"limit":float("nan")},"limit",3,0,10),3)
+
+    def test_temp_context_does_not_touch_system_prompt(self):
+        req = NS(system_prompt="stable", extra_user_content_parts=[])
+        main.CommunityRadarPlugin._append_temp(req, "per-turn hint")
+        self.assertEqual(req.system_prompt, "stable")
+        self.assertEqual(len(req.extra_user_content_parts), 1)
+        self.assertTrue(req.extra_user_content_parts[0]._no_save)
+        main.CommunityRadarPlugin._append_temp(req, "per-turn hint")
+        self.assertEqual(len(req.extra_user_content_parts), 1)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

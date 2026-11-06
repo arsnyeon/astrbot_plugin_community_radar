@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## v0.16.3
+
+- `on_llm_request` 的临时上下文（最近分享摘要、链接预览）改用 `req.extra_user_content_parts` + `TextPart.mark_as_temp()`，不再修改 `system_prompt`，避免影响前缀缓存命中。
+- 临时内容按文本去重，不写入会话历史。
+
 ## v0.16.2
 
 - 新增 `share.style`：默认 `forward`，像转发一样只发一句反应 + 原链接，不再复述视频内容；`summary` 保留原来的多聊几句模式。

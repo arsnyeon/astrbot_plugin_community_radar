@@ -21,6 +21,7 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
+from astrbot.core.agent.message import TextPart
 from astrbot.core.message.components import Plain
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.star.filter.command import GreedyStr
@@ -51,7 +52,7 @@ def _fmt_time(ts: int) -> str:
     "astrbot_plugin_community_radar",
     "arsnyeon",
     "自己逛 B 站 / 抖音 / 小黑盒，跟着聊天话题挑内容，看得懂视频与图文，会带图分享。",
-    "v0.16.2",
+    "v0.16.3",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
@@ -124,6 +125,21 @@ class CommunityRadarPlugin(Star):
         minutes = float((self.config.get("share") or {}).get("followup_minutes", 45) or 45)
         return recent_session_share(self.radar_store, umo, minutes)
 
+    @staticmethod
+    def _append_temp(req: ProviderRequest, text: str) -> None:
+        """Attach per-turn context without persisting it into history."""
+        text = str(text or "").strip()
+        if not text:
+            return
+        parts = getattr(req, "extra_user_content_parts", None)
+        if parts is None:
+            req.extra_user_content_parts = []
+            parts = req.extra_user_content_parts
+        for part in parts:
+            if getattr(part, "text", None) == text:
+                return
+        parts.append(TextPart(text=text).mark_as_temp())
+
     @filter.on_llm_request()
     async def _on_recent_share(self, event: AstrMessageEvent, req: ProviderRequest):
         """刚分享过内容时，把摘要带进当前会话，方便用户直接追问细节。"""
@@ -140,7 +156,7 @@ class CommunityRadarPlugin(Star):
                 if item.get("digest"):
                     lines.append(f"  摘要：{str(item['digest'])[:500]}")
             lines.append("不要编造摘要之外的情节；需要核实原片时可让主人用 /雷达补看。")
-            req.system_prompt = ((req.system_prompt or "") + "\n" + "\n".join(lines)).strip()
+            self._append_temp(req, "\n".join(lines))
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"[CommunityRadar] 最近分享注入跳过: {exc}")
 
@@ -172,7 +188,7 @@ class CommunityRadarPlugin(Star):
             logger.debug(f"[CommunityRadar] 链接接话跳过: {exc}")
             return
         if injected:
-            req.system_prompt = ((req.system_prompt or "") + "\n\n" + injected).strip()
+            self._append_temp(req, injected)
 
     def _is_owner(self, event: AstrMessageEvent) -> bool:
         """主人判定。未配置 admin_uin 时一律拒绝写操作（安全默认），只告警一次。"""
