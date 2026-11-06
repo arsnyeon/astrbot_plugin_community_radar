@@ -12,4 +12,4 @@
 #   - 「归属：pre_existing」的保留（说明安装前就有，可能被别的程序使用）
 #   - 没找到清单时不做任何卸载，避免误删
 set -eu
-exec python3 "$(dirname "$0")/deps.py" uninstall
+exec python3 "$(dirname "$0")/../browser/deps.py" uninstall

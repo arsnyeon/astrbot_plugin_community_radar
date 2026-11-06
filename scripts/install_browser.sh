@@ -12,4 +12,4 @@
 # 卸载插件后清单仍在数据目录，可随时查看归属：
 #   docker exec -it astrbot python3 /AstrBot/data/plugin_data/astrbot_plugin_community_radar/deps.py status
 set -eu
-exec python3 "$(dirname "$0")/deps.py" install
+exec python3 "$(dirname "$0")/../browser/deps.py" install

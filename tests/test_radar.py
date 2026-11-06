@@ -67,16 +67,16 @@ module("astrbot.core.agent")
 module("astrbot.core.agent.message", TextPart=TextPart)
 
 
-core = importlib.import_module("radar_test_plugin.radar_core")
-video = importlib.import_module("radar_test_plugin.video_watch")
-duty = importlib.import_module("radar_test_plugin.duty")
-bili = importlib.import_module("radar_test_plugin.bili")
-bili_duty = importlib.import_module("radar_test_plugin.bili_duty")
-douyin = importlib.import_module("radar_test_plugin.douyin_duty")
-autopilot = importlib.import_module("radar_test_plugin.autopilot")
-services = importlib.import_module("radar_test_plugin.radar_services")
+core = importlib.import_module("radar_test_plugin.core.radar_core")
+video = importlib.import_module("radar_test_plugin.media.video_watch")
+duty = importlib.import_module("radar_test_plugin.services.duty")
+bili = importlib.import_module("radar_test_plugin.clients.bili")
+bili_duty = importlib.import_module("radar_test_plugin.services.bili_duty")
+douyin = importlib.import_module("radar_test_plugin.services.douyin_duty")
+autopilot = importlib.import_module("radar_test_plugin.services.autopilot")
+services = importlib.import_module("radar_test_plugin.services.radar_services")
 main = importlib.import_module("radar_test_plugin.main")
-peek = importlib.import_module("radar_test_plugin.link_peek")
+peek = importlib.import_module("radar_test_plugin.media.link_peek")
 NS = types.SimpleNamespace
 
 def evidence(key="bili:BV1234567890"):

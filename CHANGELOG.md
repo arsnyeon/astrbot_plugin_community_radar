@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## v0.17.0
+
+- 统一浏览支持视觉模型选择多张实际画面，默认最多3张，硬上限6张；不接受模型生成的图片地址。
+- 新增独立32MiB/24小时画面缓存，保留时间点；原抽帧临时文件清理不影响后续分享，发送使用图片字节。
+- 根目录实现迁入 clients/browser/core/services/media/handlers/api，main.py 仅保留入口和生命周期；处理拆分后的 AstrBot 注册归属。
+- B站、小黑盒只读检索接入统一内容与能力接口，为后续社区适配提供边界；没有启用小红书或酷安。
+- 兼容声明调整为 AstrBot 4.29+，Python 3.11+；临时上下文仍使用 TextPart.mark_as_temp。
+
 ## v0.16.3
 
 - `on_llm_request` 的临时上下文（最近分享摘要、链接预览）改用 `req.extra_user_content_parts` + `TextPart.mark_as_temp()`，不再修改 `system_prompt`，避免影响前缀缓存命中。

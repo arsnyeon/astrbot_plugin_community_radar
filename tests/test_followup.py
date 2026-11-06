@@ -2,7 +2,7 @@ import importlib.util
 from pathlib import Path
 import unittest
 
-spec = importlib.util.spec_from_file_location("rs", Path(__file__).resolve().parents[1] / "radar_session.py")
+spec = importlib.util.spec_from_file_location("rs", Path(__file__).resolve().parents[1] / "core/radar_session.py")
 rs = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rs)
 
@@ -24,6 +24,15 @@ class SessionShareTests(unittest.TestCase):
         self.assertEqual(rs.ids(store, "g1", 45, now=2000), ["bili:BV1"])
         self.assertIsNone(rs.recent(store, "g2", 45, now=2000))
         self.assertIsNone(rs.recent(store, "g1", 45, now=1000 + 46 * 60))
+
+    def test_nested_evidence_is_recorded(self):
+        store = FakeStore()
+        item = {'title': 'video', '_evidence': {'content_id': 'bili:BVnested', 'url': 'https://example.org/v', 'digest': 'observed'}}
+        rs.remember(store, 'g1', [item], now=1000)
+        entry = rs.recent(store, 'g1', now=1001)
+        self.assertEqual(entry['items'][0]['digest'], 'observed')
+        self.assertEqual(rs.ids(store, 'g1', now=1001), ['bili:BVnested'])
+        self.assertEqual(rs.ids(store, 'g2', now=1001), [])
 
     def test_prunes_old_targets(self):
         store = FakeStore()

@@ -37,7 +37,7 @@ module("astrbot.core.message.message_event_result", MessageChain=Chain)
 module("astrbot.api.event", AstrMessageEvent=object, filter=deco)
 module("astrbot.api.provider", ProviderRequest=object)
 
-from radar_seg_test.duty import BrowseDuty
+from radar_seg_test.services.duty import BrowseDuty
 
 
 class Store:
