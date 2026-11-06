@@ -48,7 +48,7 @@
       "platforms": {
         "type": "string",
         "description": "浏览哪些社区",
-        "hint": "bili = B 站，heybox = 小黑盒，douyin = 抖音热榜，both = B 站 + 小黑盒，all = 三者都要。",
+        "hint": "all允许自主挑选三平台之一，both允许B站或小黑盒，亦可指定单平台。",
         "default": "all"
       },
       "interests_mode": {
@@ -72,7 +72,7 @@
       "persona": {
         "type": "text",
         "description": "浏览时的口吻",
-        "hint": "一句话说明她的性格与说话方式，用于生成点评与选择感兴趣的内容。留空则使用默认的中立、有个人偏好的口吻。",
+        "hint": "留空跟随AstrBot会话人格；无法读取时才使用通用口吻。",
         "default": ""
       },
       "mode": {
@@ -145,6 +145,23 @@
             "default": 2
           }
         }
+      },
+      "deep_watch_per_run": {
+        "type": "int",
+        "description": "每轮认真理解几条内容",
+        "default": 2,
+        "hint": "0关闭深看与内容点评；建议1～2。"
+      },
+      "run_timeout_seconds": {
+        "type": "int",
+        "description": "一轮浏览的总时间预算（秒）",
+        "default": 600
+      },
+      "following_updates": {
+        "type": "bool",
+        "description": "候选加入关注UP的更新",
+        "default": true,
+        "hint": "需要B站登录态；失败时仍可使用热门和搜索。"
       }
     }
   },
@@ -470,9 +487,9 @@
       },
       "max_transcript_chars": {
         "type": "int",
-        "description": "字幕最大字符数",
-        "hint": "超长视频的字幕会截断到这个长度，避免撑爆上下文。",
-        "default": 3000
+        "description": "分段概括后的文字预算",
+        "default": 3000,
+        "hint": "长字幕逐段处理，避免只取开头。"
       },
       "use_frames": {
         "type": "bool",
@@ -482,9 +499,9 @@
       },
       "frames": {
         "type": "int",
-        "description": "抽几帧",
-        "hint": "按视频时长均匀取帧，最多 8 帧。帧越多画面信息越全，但更慢、更耗 token。",
-        "default": 5
+        "description": "关键帧数量",
+        "default": 6,
+        "hint": "1～12，覆盖开头、中间和结尾；字幕与画面一起使用。"
       },
       "provider_id": {
         "type": "string",
@@ -508,9 +525,145 @@
       },
       "audio_seconds": {
         "type": "int",
-        "description": "音轨最多转写多少秒",
-        "hint": "超长视频只转写开头这一段，避免输入过大。",
-        "default": 180
+        "description": "音频总处理时长上限",
+        "default": 180,
+        "hint": "没有字幕时按180秒分段转写；超过预算明确标记。"
+      },
+      "timeout_seconds": {
+        "type": "int",
+        "description": "单条内容时间预算（秒）",
+        "default": 150
+      }
+    }
+  },
+  "learning": {
+    "type": "object",
+    "description": "观看记忆与兴趣",
+    "items": {
+      "enable": {
+        "type": "bool",
+        "description": "从可靠内容生成感想和偏好",
+        "default": true
+      },
+      "ai_provider_id": {
+        "type": "string",
+        "description": "内容概括与感想模型",
+        "default": ""
+      }
+    }
+  },
+  "activity": {
+    "type": "object",
+    "description": "日程与回顾",
+    "items": {
+      "daily_plan": {
+        "type": "bool",
+        "description": "模型安排当天浏览时间",
+        "default": false,
+        "hint": "关闭时沿用随机间隔；开启后空计划表示当天不浏览。"
+      },
+      "weekly_push": {
+        "type": "bool",
+        "description": "周日晚上分享浏览周记",
+        "default": false,
+        "hint": "仍受分享开关、每日上限和冷却约束。"
+      },
+      "ai_provider_id": {
+        "type": "string",
+        "description": "日程模型",
+        "default": ""
+      }
+    }
+  },
+  "bangumi": {
+    "type": "object",
+    "description": "番剧与单集记忆",
+    "items": {
+      "enable": {
+        "type": "bool",
+        "description": "启用搜索、追番列表和单集理解",
+        "default": false,
+        "hint": "使用账号正常可播放的内容；抽帧或部分转写会说明覆盖范围。"
+      }
+    }
+  },
+  "inbox": {
+    "type": "object",
+    "description": "B站新通知与私信",
+    "items": {
+      "enable": {
+        "type": "bool",
+        "description": "监听新通知",
+        "default": false,
+        "hint": "首次读取仅建立游标，不回复旧消息。沿用B站试运行设置。"
+      },
+      "comments": {
+        "type": "bool",
+        "description": "处理评论回复和@通知",
+        "default": false
+      },
+      "private_messages": {
+        "type": "bool",
+        "description": "处理新私信",
+        "default": false
+      },
+      "allowed_uids": {
+        "type": "list",
+        "description": "允许回复的B站UID",
+        "default": [],
+        "hint": "同时允许bili.owner_mid；未绑定主人且白名单为空时不处理。"
+      },
+      "poll_seconds": {
+        "type": "int",
+        "description": "轮询间隔（秒）",
+        "default": 300
+      },
+      "max_per_day": {
+        "type": "int",
+        "description": "每位用户每日私信回复上限",
+        "default": 5
+      }
+    }
+  },
+  "bili_actions": {
+    "type": "object",
+    "description": "B站扩展动作",
+    "items": {
+      "coin": {
+        "type": "bool",
+        "description": "允许投币",
+        "default": false,
+        "hint": "每次1枚，沿用B站试运行。"
+      },
+      "favorite": {
+        "type": "bool",
+        "description": "允许收藏",
+        "default": false
+      },
+      "follow": {
+        "type": "bool",
+        "description": "允许关注UP",
+        "default": false
+      },
+      "dynamic": {
+        "type": "bool",
+        "description": "允许发布动态",
+        "default": false
+      },
+      "folder_id": {
+        "type": "string",
+        "description": "收藏夹ID",
+        "default": ""
+      },
+      "max_per_day": {
+        "type": "int",
+        "description": "每种扩展动作每日上限",
+        "default": 2
+      },
+      "gap_seconds": {
+        "type": "int",
+        "description": "同种扩展动作最小间隔",
+        "default": 300
       }
     }
   }

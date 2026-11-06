@@ -12,6 +12,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 import time
 
@@ -33,6 +35,8 @@ from .heybox import HeyboxClient, HeyboxError
 from .link_peek import LinkPeek
 from .topic_watch import TopicWatch
 from .video_watch import VideoWatch
+from .radar_core import RadarStore, RadarAI, Cognition, RadarMemoryAPI, verified
+from .radar_services import RadarServices
 
 
 def _fmt_time(ts: int) -> str:
@@ -44,34 +48,45 @@ def _fmt_time(ts: int) -> str:
 @register(
     "astrbot_plugin_community_radar",
     "arsnyeon",
-    "社区雷达：自己决定什么时候逛 B 站 / 抖音 / 小黑盒，看得懂视频与图文，会点赞评论回复，也接得住你分享的链接。",
-    "v0.14.0",
+    "自己逛 B 站 / 抖音 / 小黑盒，跟着聊天话题挑内容，看得懂视频与图文，会带图分享。",
+    "v0.15.0",
     "https://github.com/arsnyeon/astrbot_plugin_community_radar",
 )
 class CommunityRadarPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict | None = None):
         super().__init__(context)
         self.config = config or {}
+        self.browser_lock = asyncio.Lock()
+        self.radar_store = RadarStore(BrowseDuty._data_dir())
+        self.radar_ai = RadarAI(self)
+        self.cognition = Cognition(self)
+        self.radar_memory_api = RadarMemoryAPI(self)
+        self.services = RadarServices(self)
         self.bili = BiliClient(cookie=str(self.config.get("bili_cookie", "")))
         self.heybox = HeyboxClient(cookie=str(self.config.get("heybox_cookie", "")))
         self.bili_duty = BiliDuty(self)
-        self.bili_duty.start()
         self.topic_watch = TopicWatch(self)
         self.duty = BrowseDuty(self)
-        self.duty.start()
         self.douyin_cfg = dict(self.config.get("douyin") or {})
         self.douyin_cfg.setdefault("targets", (self.config.get("browse") or {}).get("targets") or [])
         self.douyin_feed = DouyinFeed()
         self.douyin_browser = DouyinBrowser(self.douyin_cfg)
         self.douyin_duty = DouyinDuty(self, self.douyin_browser, self.douyin_cfg)
-        self.douyin_duty.start()
         self.link_peek = LinkPeek(self)
         self.video_watch = VideoWatch(self)
         self._peek_last: dict[str, float] = {}
         self._owner_warned = False
 
+    async def initialize(self):
+        self.bili_duty.start()
+        self.duty.start()
+        self.douyin_duty.start()
+        self.services.start()
+        logger.info("[CommunityRadar] v0.15.0 观看证据、兴趣与活动服务已启动")
+
     async def terminate(self) -> None:
         for stop in (
+            self.services.stop,
             self.duty.stop,
             self.bili_duty.stop,
             self.douyin_duty.stop,
@@ -83,6 +98,8 @@ class CommunityRadarPlugin(Star):
                 await stop()
             except Exception:  # noqa: BLE001
                 pass
+        await self.douyin_browser.close()
+        self.radar_store.close()
         logger.info("CommunityRadar plugin stopped.")
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -401,49 +418,23 @@ class CommunityRadarPlugin(Star):
 
     # ── 写操作命令 ────────────────────────────────────────────────
 
-    @filter.command("b站发评论", alias={"B站发评论"}, desc="在 B 站视频下发评论")
+    @filter.command("b站发评论", alias={"B站发评论"}, desc="在B站视频下留言")
     async def bili_comment_cmd(self, event: AstrMessageEvent, arg: GreedyStr):
         if not self._is_owner(event):
-            yield event.plain_result("这个操作只有主人能用。")
+            yield event.plain_result("只有主人能发评论。")
             return
-        if bool((self.config.get("bili") or {}).get("dry_run", True)):
-            yield event.plain_result("试运行：没真发评论（bili.dry_run 开着）。")
-            return
-        arg = (arg or "").strip()
-        if " " not in arg:
+        parts = str(arg).strip().split(maxsplit=1)
+        if len(parts) != 2:
             yield event.plain_result("用法：/b站发评论 BV号 评论内容")
             return
-        bvid, message = arg.split(" ", 1)
-        vid = find_video_id(bvid)
-        if not vid or "short" in vid:
-            yield event.plain_result("先给个有效 BV 号。")
-            return
-        try:
-            info = await self.bili.view(vid.get("bvid", ""), vid.get("aid", ""))
-            r = await self.bili.post_comment(str(info["aid"]), message.strip())
-            yield event.plain_result(f"评论已发（rpid={r.get('rpid')}）。")
-        except BiliError as exc:
-            yield event.plain_result(f"评论失败：{exc}")
+        yield event.plain_result((await self.bili_duty.comment(parts[0], parts[1]))["message"])
 
-    @filter.command("b站点赞", alias={"B站点赞"}, desc="给 B 站视频点赞")
+    @filter.command("b站点赞", alias={"B站点赞"}, desc="给B站视频点赞")
     async def bili_like_cmd(self, event: AstrMessageEvent, bvid: GreedyStr):
         if not self._is_owner(event):
-            yield event.plain_result("这个操作只有主人能用。")
+            yield event.plain_result("只有主人能点赞。")
             return
-        if bool((self.config.get("bili") or {}).get("dry_run", True)):
-            yield event.plain_result("试运行：没真点赞（bili.dry_run 开着）。")
-            return
-        bvid = (bvid or "").strip()
-        vid = find_video_id(bvid)
-        if not vid or "short" in vid:
-            yield event.plain_result("给个 BV 号。")
-            return
-        try:
-            info = await self.bili.view(vid.get("bvid", ""), vid.get("aid", ""))
-            await self.bili.like_video(str(info["aid"]))
-            yield event.plain_result(f"已给《{info['title']}》点赞。")
-        except BiliError as exc:
-            yield event.plain_result(f"点赞失败：{exc}")
+        yield event.plain_result((await self.bili_duty.like(str(bvid).strip()))["message"])
 
     @filter.command("小黑盒发帖", alias={"heybox发帖"}, desc="在小黑盒发帖")
     async def heybox_post_cmd(self, event: AstrMessageEvent, arg: GreedyStr):
@@ -640,7 +631,7 @@ class CommunityRadarPlugin(Star):
                 yield event.plain_result("只有主人能让我现在去逛。")
                 return
             self.duty.schedule_now()
-            yield event.plain_result("好，我这就去逛一圈，最多一分钟内会给你发消息。")
+            yield event.plain_result("已排队，下一次检查会开始浏览。看懂内容后再决定是否分享，可以用 /雷达活动 查看进度。")
             return
         if sub in ("兴趣", "想搜什么", "interests"):
             persona = await self.duty._bot_persona(cfg)
@@ -685,6 +676,8 @@ class CommunityRadarPlugin(Star):
             return
         yield event.plain_result("我去看看这个…")
         r = await self.video_watch.any(ref, cfg)
+        if verified(r):
+            await self.cognition.review(r)
         if not r.get("ok"):
             yield event.plain_result(r.get("message") or "没看成")
             return
@@ -753,31 +746,26 @@ class CommunityRadarPlugin(Star):
 
     @filter.llm_tool(name="bili_comment")
     async def _t_bili_comment(self, event: AstrMessageEvent, bvid: str, message: str) -> str:
-        """在 B 站视频下发评论。bvid 为 BV 号，message 为评论内容。需要已在插件配置里填 B 站 Cookie。"""
+        """在B站视频下留言，只有主人可用，遵守试运行和额度。
+
+        Args:
+            bvid(string): 视频BV号
+            message(string): 评论内容
+        """
         if not self._is_owner(event):
-            return "只有主人才能让我去发评论。"
-        if bool((self.config.get("bili") or {}).get("dry_run", True)):
-            return "试运行：没真发评论（bili.dry_run 开着）。"
-        try:
-            info = await self.bili.view(bvid)
-            r = await self.bili.post_comment(str(info["aid"]), message)
-            return f"评论已发（rpid={r.get('rpid')}）。"
-        except BiliError as exc:
-            return f"评论失败：{exc}"
+            return "只有主人能发评论。"
+        return (await self.bili_duty.comment(bvid, message))["message"]
 
     @filter.llm_tool(name="bili_like")
     async def _t_bili_like(self, event: AstrMessageEvent, bvid: str) -> str:
-        """给 B 站视频点赞。bvid 为 BV 号。需要已在插件配置里填 B 站 Cookie。"""
+        """给B站视频点赞，只有主人可用，遵守试运行和额度。
+
+        Args:
+            bvid(string): 视频BV号
+        """
         if not self._is_owner(event):
-            return "只有主人才能让我去点赞。"
-        if bool((self.config.get("bili") or {}).get("dry_run", True)):
-            return "试运行：没真点赞（bili.dry_run 开着）。"
-        try:
-            info = await self.bili.view(bvid)
-            await self.bili.like_video(str(info["aid"]))
-            return f"已给《{info['title']}》点赞。"
-        except BiliError as exc:
-            return f"点赞失败：{exc}"
+            return "只有主人能点赞。"
+        return (await self.bili_duty.like(bvid))["message"]
 
     @filter.llm_tool(name="heybox_comment")
     async def _t_heybox_comment(self, event: AstrMessageEvent, link_id: str, text: str) -> str:
@@ -815,72 +803,28 @@ class CommunityRadarPlugin(Star):
     # ── 主动分享 LLM 工具 ────────────────────────────────────────
 
     @filter.llm_tool(name="radar_share")
-    async def _t_radar_share(
-        self, event: AstrMessageEvent, title: str, url: str = "", comment: str = "", image: str = ""
-    ) -> str:
-        """把一条你觉得有趣的社区内容分享出去（默认私聊主人，也可以在当前群里说）。
+    async def _t_radar_share(self, event: AstrMessageEvent, title: str, url: str = "",
+                             comment: str = "", image: str = "") -> str:
+        """把实际发现的社区内容分享给主人，按内容去重并遵守每日上限。
 
         Args:
-            title(string): 内容标题或一句话概括
+            title(string): 内容标题
             url(string): 原链接
-            comment(string): 你想顺带说的那句话（可选）
-            image(string): 想一起发出去的图片地址（可选，封面/截图都行）
+            comment(string): 基于实际资料的感想，可为空
+            image(string): 可选封面图片地址
         """
-        name = str(title or "").strip()
-        if not name:
-            return "没有可分享的内容"
         if not self._is_owner(event):
-            return "只有主人才能让我主动分享给他。"
-        ok, why = self._share_allowed()
-        if not ok:
-            return why
-        text = f"看到个有意思的：《{name[:60]}》"
-        note = str(comment or "").strip()
-        if note:
-            text += f"\n{note[:200]}"
-        link = str(url or "").strip()
-        if link:
-            text += f"\n{link}"
-
-        chain: list = [Plain(text)]
-        pic = str(image or "").strip()
-        if not pic:
-            # 没显式给图，就尝试从链接里挖一张
-            try:
-                from .autopilot import Autopilot
-
-                if link:
-                    item: dict = {}
-                    m = re.search(r"/video/(BV\w+)", link)
-                    if m:
-                        v = await self.bili.view(m.group(1))
-                        item = {"pic": v.get("pic")}
-                    pic = Autopilot.image_of(item)
-            except Exception:  # noqa: BLE001
-                pic = ""
-        if pic.startswith("http"):
-            try:
-                from astrbot.core.message.components import Image
-
-                chain.append(Image.fromURL(pic))
-            except Exception:  # noqa: BLE001
-                pass
-
-        umo = self._owner_umo()
-        if not umo:
-            return "没配置主人 QQ 号，没法私聊分享"
-        try:
-            await self.context.send_message(umo, MessageChain(chain))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[CommunityRadar] 主动分享失败: {exc}")
-            return f"分享失败：{exc}"
-        bili_err = ""
-        if self._bili_share_enabled():
-            bili_err = await self._send_bili_dm(text)
-        self._mark_shared()
-        if bili_err:
-            return f"已私聊分享给主人（B 站私信没发成：{bili_err}）"
-        return "已经私聊分享给主人了"
+            return "只有主人能触发主动分享。"
+        if not str(title).strip():
+            return "没有可分享的内容"
+        target = self._owner_umo()
+        if not target:
+            return "未配置主人账号"
+        text = f"《{str(title)[:80]}》\n{str(comment)[:300]}\n{str(url)[:500]}".strip()
+        cfg = dict(self.config.get("browse") or {}, targets=[target])
+        sent = await self.duty._send(text, cfg, image_url=image if image.startswith("https://") else "",
+                                     context_items=[{"url": url}])
+        return "已经分享给主人" if sent else "未确认发送成功，可能已分享、达到额度或发送结果未知。"
 
     @filter.llm_tool(name="radar_watch_video")
     async def _t_watch_video(self, event: AstrMessageEvent, url: str) -> str:
@@ -893,9 +837,11 @@ class CommunityRadarPlugin(Star):
         if not cfg.get("enable", True):
             return "视频理解没有开启"
         r = await self.video_watch.any(url, cfg)
+        if verified(r):
+            await self.cognition.review(r)
         if not r.get("ok"):
             return r.get("message") or "没看成这条内容"
-        return f"（已通过{r.get('via')}看完）\n{r.get('digest')}"
+        return f"证据状态：{r.get('status')}；来源：{r.get('via')}。抽样不等于完整观看。\n{r.get('digest')}"
 
     @filter.llm_tool(name="bili_browse")
     async def _t_bili_browse(self, event: AstrMessageEvent) -> str:
@@ -985,4 +931,119 @@ class CommunityRadarPlugin(Star):
             f"{('已核对 ' + s['owner']['nickname']) if s['owner']['confirmed'] else '未核对'}。"
             f"浏览器：{s['browser']['browser'] or '未安装'}，已连接={s['browser']['connected']}。"
         )
+
+    @filter.command("雷达记忆", desc="查询看过内容与当时感想")
+    async def radar_memory_cmd(self, event: AstrMessageEvent, query: GreedyStr = ""):
+        if not self._is_owner(event):
+            yield event.plain_result("只有主人能查询完整浏览记忆。")
+            return
+        yield event.plain_result(self.cognition.recall(str(query).strip()))
+
+    @filter.command("雷达兴趣", desc="查看从真实观看积累的偏好")
+    async def radar_interests_cmd(self, event: AstrMessageEvent):
+        yield event.plain_result(self.radar_store.preference_text())
+
+    @filter.command("雷达周记", desc="根据真实观看记录写浏览周记")
+    async def radar_weekly_cmd(self, event: AstrMessageEvent):
+        if not self._is_owner(event):
+            yield event.plain_result("只有主人能查询浏览周记。")
+            return
+        text = await self.cognition.weekly()
+        card = self.cognition.weekly_card(text)
+        if card:
+            yield event.image_result(card)
+        else:
+            yield event.plain_result(text)
+
+    @filter.command("雷达活动", desc="查看当前浏览进度与计划")
+    async def radar_activity_cmd(self, event: AstrMessageEvent):
+        if not self._is_owner(event):
+            return
+        activity = self.radar_memory_api.activity()
+        plan = self.radar_store.get("last_plan", {})
+        yield event.plain_result(
+            f"当前：{activity.get('stage', 'idle')} {activity.get('title', '')}\n"
+            f"最近计划：{plan.get('reason', '尚未形成')}\n下次浏览：{self.duty.next_run_text()}")
+
+    @filter.command("雷达补看", desc="按问题补看指定片段")
+    async def radar_inspect_cmd(self, event: AstrMessageEvent, arg: GreedyStr):
+        if not self._is_owner(event):
+            yield event.plain_result("只有主人能触发补看。")
+            return
+        parts = str(arg).split(maxsplit=3)
+        if len(parts) != 4:
+            yield event.plain_result("用法：/雷达补看 链接 起始秒 结束秒 要确认的问题（最多180秒）")
+            return
+        try:
+            start, end = float(parts[1]), float(parts[2])
+        except ValueError:
+            yield event.plain_result("起止时间请用秒数。")
+            return
+        result = await self.video_watch.inspect(parts[0], parts[3], start, end)
+        yield event.plain_result(result.get("digest") or result.get("message", "未取得资料"))
+
+    @filter.command("雷达重看", desc="明确重新分析一个已看过的链接")
+    async def radar_rewatch_cmd(self, event: AstrMessageEvent, url: GreedyStr):
+        if not self._is_owner(event):
+            yield event.plain_result("只有主人能要求重新分析。")
+            return
+        cfg = dict(self.config.get("video") or {}, force_rewatch=True)
+        result = await self.video_watch.any(str(url).strip(), cfg)
+        if verified(result):
+            await self.cognition.review(result)
+        yield event.plain_result(result.get("digest") or result.get("message", "未取得资料"))
+
+    @filter.command("雷达追番", desc="搜索番剧、查询更新、观看并记忆单集")
+    async def radar_bangumi_cmd(self, event: AstrMessageEvent, arg: GreedyStr = ""):
+        if not self._is_owner(event):
+            yield event.plain_result("只有主人能使用追番管理。")
+            return
+        parts = str(arg).strip().split(maxsplit=1)
+        try:
+            result = await self.services.bangumi(parts[0] if parts else "", parts[1] if len(parts) > 1 else "")
+        except Exception as exc:
+            result = f"番剧请求未完成（{type(exc).__name__}），没有记为看过。"
+        yield event.plain_result(result)
+
+    @filter.command("雷达B站操作", desc="投币、收藏、关注或发布动态；受独立开关与试运行约束")
+    async def radar_action_cmd(self, event: AstrMessageEvent, arg: GreedyStr = ""):
+        if not self._is_owner(event):
+            yield event.plain_result("只有主人能执行平台操作。")
+            return
+        parts = str(arg).strip().split(maxsplit=1)
+        mapping = {"投币": "coin", "收藏": "favorite", "关注": "follow", "动态": "dynamic"}
+        if len(parts) != 2 or parts[0] not in mapping:
+            yield event.plain_result("用法：/雷达B站操作 投币 BV号｜收藏 BV号｜关注 UID｜动态 正文")
+            return
+        action = mapping[parts[0]]
+        result = await self.services.extra_action(action, parts[1] if action != "dynamic" else "",
+                                                  parts[1] if action == "dynamic" else "")
+        yield event.plain_result(result["message"])
+
+    @filter.llm_tool(name="radar_recall")
+    async def radar_recall_tool(self, event: AstrMessageEvent, query: str = "") -> str:
+        """查询已经取得内容依据的浏览记忆和当时感想，不重新下载。仅主人可用。
+
+        Args:
+            query(string): 要回忆的作品、题材或作者；空字符串查询最近记录
+        """
+        if not self._is_owner(event):
+            return "当前会话不能查询完整浏览记忆。"
+        return self.cognition.recall(query)
+
+    @filter.llm_tool(name="radar_inspect")
+    async def radar_inspect_tool(self, event: AstrMessageEvent, url: str,
+                                 question: str, start: float, end: float) -> str:
+        """有明确疑问时检查原视频的一段，最多180秒；不更新偏好和观看记忆。仅主人可用。
+
+        Args:
+            url(string): 要核查的原视频链接
+            question(string): 需要核实的具体内容
+            start(number): 原视频起始秒数
+            end(number): 原视频结束秒数
+        """
+        if not self._is_owner(event):
+            return "当前会话不能触发补看。"
+        result = await self.video_watch.inspect(url, question, start, end)
+        return json.dumps(result, ensure_ascii=False)
 

@@ -106,8 +106,8 @@ class Autopilot:
         focus = ""
         for t in topics:
             p = str(t.get("platform") or "any").lower()
-            if p in PLATFORMS:
-                platforms = [p] if p in enabled else list(enabled)
+            if p in enabled:
+                platforms = [p]
                 focus = p
                 break
 
@@ -129,13 +129,16 @@ class Autopilot:
             pool: list[str] = []
             for p in platforms:
                 try:
-                    w = int(weights.get(p) or 1)
+                    w = int(weights.get(p, 1))
                 except Exception:  # noqa: BLE001
                     w = 1
-                pool += [p] * max(1, min(w, 5))
+                pool += [p] * max(0, min(w, 5))
             focus = random.choice(pool) if pool else ""
             if focus:
+                platforms = [focus]
                 reason = f"今天更想刷{PLATFORM_LABEL.get(focus, focus)}"
+            else:
+                platforms = []
 
         return {
             "platforms": platforms,
@@ -223,7 +226,7 @@ class Autopilot:
         if not (group_cfg.get("sessions") or []):
             return False
         try:
-            p = float(group_cfg.get("probability") or 0.35)
+            p = float(group_cfg.get("probability", 0.35))
         except Exception:  # noqa: BLE001
             p = 0.35
         return random.random() < max(0.0, min(p, 1.0))

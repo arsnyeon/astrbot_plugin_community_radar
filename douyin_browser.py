@@ -432,13 +432,28 @@ class DouyinBrowser:
             raise BrowserError("这个视频打不开（删了、私密或者是直播）")
         return v
 
+    async def search_videos(self, keyword: str, limit: int = 5) -> list[dict]:
+        """Resolve a topic to actual aweme IDs using the authenticated web session."""
+        payload = await self._api("/aweme/v1/web/general/search/single/", {
+            "keyword": str(keyword)[:80], "search_channel": "aweme_video_web",
+            "search_source": "normal_search", "query_correct_type": 1,
+            "is_filter_search": 0, "offset": 0, "count": max(1, min(limit, 10)),
+        })
+        out, seen = [], set()
+        for raw in payload.get("data") or []:
+            item = normalize_aweme(raw) if isinstance(raw, dict) else None
+            if item and item["aweme_id"] not in seen:
+                seen.add(item["aweme_id"])
+                out.append(item)
+        return out[:limit]
+
     async def comments(self, aweme_id: str, limit: int = 15) -> list[dict]:
         p = await self._api("/aweme/v1/web/comment/list/", {
             "aweme_id": aweme_id, "cursor": 0, "count": 30, "item_type": 0,
         })
         return parse_comments(p, limit)
 
-    async def grab_frames(self, vid: str, count: int = 3) -> list[str]:
+    async def grab_frames(self, vid: str, count: int = 3, start=None, end=None) -> list[str]:
         """在真实播放器上按时间点截图，返回若干帧的本地路径。
 
         直接截 `<video>` 元素的画面，不依赖分享页 SSR，也不下载整段视频。
@@ -462,7 +477,7 @@ class DouyinBrowser:
             return []
 
         dur = float(info.get("duration") or 0)
-        count = max(1, min(int(count), 8))
+        count = max(1, min(int(count), 12))
         width = min(float(info["width"]), 1280)
         height = min(float(info["height"]), 860)
         box = {"x": max(0.0, float(info["x"])), "y": max(0.0, float(info["y"])),
@@ -483,18 +498,43 @@ class DouyinBrowser:
 
         out: list[str] = []
         hashes: list[str] = []
-        for i in range(count):
-            if dur > 3:
-                t = dur * (0.12 + 0.72 * i / max(1, count - 1 if count > 1 else 1))
-            else:
-                t = 0.4 + i
+        self._last_frame_times = []
+        from .video_watch import sample_times
+        if start is not None and end is not None and not 0 <= float(start) < float(end) <= dur:
+            raise BrowserError("补看范围不在视频内")
+        for t in sample_times(dur, count, float(start or 0), end):
+            path = ""
             try:
-                await page.evaluate(self.SEEK_MAIN_JS, t)
-                await asyncio.sleep(0.9)
+                await page.evaluate("""async (t) => {
+                    const v = [...document.querySelectorAll('video')].sort((a,b) =>
+                        b.getBoundingClientRect().width*b.getBoundingClientRect().height -
+                        a.getBoundingClientRect().width*a.getBoundingClientRect().height)[0];
+                    if (!v) throw new Error('no video');
+                    v.pause();
+                    await new Promise((resolve, reject) => {
+                        const timer = setTimeout(() => {v.removeEventListener('seeked', done); reject(new Error('seek timeout'));}, 7000);
+                        function done() {clearTimeout(timer); resolve();}
+                        if (Math.abs(v.currentTime-t)<0.05 && v.readyState>=2) {clearTimeout(timer);resolve();return;}
+                        v.addEventListener('seeked', done, {once:true}); v.currentTime=t;
+                    });
+                    if (v.readyState < 2 || Math.abs(v.currentTime-t)>1) throw new Error('unready frame');
+                }""", t)
                 fd, path = tempfile.mkstemp(suffix=".jpg", prefix="radar_dyframe_")
                 os.close(fd)
                 await page.screenshot(path=path, clip=box, type="jpeg", quality=70)
+            except asyncio.CancelledError:
+                for old in out + ([path] if path else []):
+                    try:
+                        os.unlink(old)
+                    except OSError:
+                        pass
+                raise
             except Exception:  # noqa: BLE001
+                if path:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
                 continue
             try:
                 if os.path.getsize(path) < 3000:
@@ -511,6 +551,7 @@ class DouyinBrowser:
                 continue
             hashes.append(h)
             out.append(path)
+            self._last_frame_times.append(t)
         return out
 
     @staticmethod

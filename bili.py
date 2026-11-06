@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import time
 from typing import Any, Optional
@@ -91,6 +92,10 @@ def find_video_id(text: str) -> Optional[dict[str, str]]:
 
 class BiliError(RuntimeError):
     pass
+
+
+class WriteUnknown(BiliError):
+    """Request may have reached Bilibili; never automatically repeat it."""
 
 
 class BiliClient:
@@ -247,22 +252,30 @@ class BiliClient:
             "title": d.get("title"),
             "desc": str(d.get("desc") or "")[:600],
             "author": (d.get("owner") or {}).get("name"),
+            "mid": (d.get("owner") or {}).get("mid"),
             "play": int(stat.get("view") or 0),
             "like": int(stat.get("like") or 0),
             "reply": int(stat.get("reply") or 0),
             "pubdate": int(d.get("pubdate") or 0),
-            "duration": d.get("duration"),
+            "duration": ((d.get("pages") or [{}])[0].get("duration") or d.get("duration")),
+            "total_duration": d.get("duration"),
+            "parts": len(d.get("pages") or []),
             "tname": d.get("tname"),
             "pic": _fix_pic(d.get("pic")),
         }
 
     async def _post_form(self, url: str, data: dict) -> Any:
-        r = await self._client.post(url, data=data, headers=self._headers())
+        try:
+            r = await self._client.post(url, data=data, headers=self._headers())
+        except httpx.TransportError as exc:
+            raise WriteUnknown("发送结果未知，请先在平台核对，不自动重试") from exc
         try:
             j = r.json()
         except Exception as exc:  # noqa: BLE001
-            raise BiliError(f"响应不是 JSON（HTTP {r.status_code}）") from exc
-        if j.get("code") not in (0, None):
+            raise WriteUnknown(f"发送响应无法确认（HTTP {r.status_code}）") from exc
+        if not isinstance(j, dict) or "code" not in j:
+            raise WriteUnknown("发送响应缺少结果码")
+        if j.get("code") != 0:
             raise BiliError(f"B 站接口错误 {j.get('code')}: {j.get('message')}")
         return j.get("data")
 
@@ -336,31 +349,45 @@ class BiliClient:
 
     async def subtitles(self, bvid: str, cid: str) -> str:
         """拿视频字幕（CC）全文；没有字幕或需要登录时返回空串。"""
+        segments = await self.subtitle_segments(bvid, cid)
+        return " ".join(s["text"] for s in segments)
+
+    async def subtitle_segments(self, bvid: str, cid: str) -> list[dict]:
         if not bvid or not cid:
-            return ""
+            return []
         url = await self._signed(
             "https://api.bilibili.com/x/player/wbi/v2", {"bvid": bvid, "cid": cid}
         )
         d = await self._get(url) or {}
         subs = ((d.get("subtitle") or {}).get("subtitles")) or []
         if not subs:
-            return ""
+            return []
         pick = next(
             (s for s in subs if "zh" in str(s.get("lan") or s.get("lan_doc")).lower()),
             subs[0],
         )
         sub_url = str(pick.get("subtitle_url") or "")
         if not sub_url:
-            return ""
+            return []
         if sub_url.startswith("//"):
             sub_url = "https:" + sub_url
         try:
             r = await self._client.get(sub_url, headers={"User-Agent": UA})
             body = (r.json() or {}).get("body") or []
         except Exception:  # noqa: BLE001
-            return ""
-        text = " ".join(str(x.get("content") or "") for x in body if isinstance(x, dict))
-        return re.sub(r"\s+", " ", text).strip()
+            return []
+        segments = []
+        for item in body:
+            if not isinstance(item, dict):
+                continue
+            try:
+                start, end = float(item.get("from", 0)), float(item.get("to", 0))
+            except (TypeError, ValueError):
+                continue
+            text = str(item.get("content") or "").strip()
+            if text and 0 <= start < end:
+                segments.append({"start": start, "end": end, "text": text})
+        return sorted(segments, key=lambda s: s["start"])
 
     async def resolve_short(self, url: str) -> str:
         """b23.tv 短链跟一次跳转，返回真实地址。"""
@@ -372,9 +399,12 @@ class BiliClient:
 
     async def play_url(self, bvid: str, cid: str, aid: str = "", qn: int = 32) -> str:
         """取一个可直接下载的视频流地址（优先渐进式 mp4，其次 DASH）。"""
+        return (await self.play_sources(bvid, cid, aid, qn)).get("video", "")
+
+    async def play_sources(self, bvid: str, cid: str, aid: str = "", qn: int = 32) -> dict:
         if not cid:
-            return ""
-        params = {"bvid": bvid, "cid": cid, "qn": qn, "fnval": 1, "fnver": 0, "fourk": 1}
+            return {}
+        params = {"bvid": bvid, "cid": cid, "qn": qn, "fnval": 16, "fnver": 0, "fourk": 0}
         if aid:
             params["avid"] = aid
         url = await self._signed("https://api.bilibili.com/x/player/wbi/playurl", params)
@@ -382,8 +412,87 @@ class BiliClient:
         for item in (d.get("durl") or []):
             u = str(item.get("url") or "")
             if u:
-                return u
+                return {"video": u, "audio": u}
         vids = ((d.get("dash") or {}).get("video")) or []
-        if vids:
-            return str(vids[0].get("baseUrl") or vids[0].get("base_url") or "")
-        return ""
+        audios = ((d.get("dash") or {}).get("audio")) or []
+        pick = lambda values: str(values[0].get("baseUrl") or values[0].get("base_url") or "") if values else ""
+        return {"video": pick(vids), "audio": pick(audios)}
+
+    async def following_updates(self, limit: int = 10) -> list[dict]:
+        if not self.cookie:
+            return []
+        data = await self._get("https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all",
+                               {"type": "video", "offset": "", "timezone_offset": -480})
+        out = []
+        for item in (data or {}).get("items") or []:
+            modules = item.get("modules") or {}
+            author = modules.get("module_author") or {}
+            archive = ((modules.get("module_dynamic") or {}).get("major") or {}).get("archive") or {}
+            if not archive.get("bvid"):
+                continue
+            out.append({"bvid": archive["bvid"], "title": archive.get("title") or "",
+                        "author": author.get("name") or "", "mid": author.get("mid"),
+                        "pic": _fix_pic(archive.get("cover")), "desc": archive.get("desc") or "",
+                        "_via": "关注更新"})
+        return out[:max(0, min(30, limit))]
+
+    async def extra_action(self, action: str, target: str, text: str = "", folder_id: str = "") -> dict:
+        csrf = self._csrf()
+        if action == "follow":
+            return await self._post_form("https://api.bilibili.com/x/relation/modify",
+                                         {"fid": target, "act": 1, "re_src": 11, "csrf": csrf})
+        if action == "dynamic":
+            payload = {"dyn_req": {"content": {"contents": [{"raw_text": text, "type": 1, "biz_id": ""}]},
+                                   "scene": 1}, "csrf": csrf}
+            try:
+                response = await self._client.post(
+                    "https://api.bilibili.com/x/dynamic/feed/create/dyn", params={"csrf": csrf},
+                    json=payload, headers=self._headers())
+                data = response.json()
+            except (httpx.TransportError, ValueError) as exc:
+                raise WriteUnknown("动态发送结果未知，不自动重试") from exc
+            if not isinstance(data, dict) or "code" not in data:
+                raise WriteUnknown("动态结果无法确认")
+            if data["code"] != 0:
+                raise BiliError(f"动态发布失败：{data['code']}")
+            return data.get("data") or {}
+        info = await self.view(target)
+        aid = str(info.get("aid") or "")
+        if action == "coin":
+            return await self._post_form("https://api.bilibili.com/x/web-interface/coin/add",
+                                         {"aid": aid, "multiply": 1, "select_like": 0, "csrf": csrf})
+        if action == "favorite":
+            if not folder_id.isdigit():
+                raise BiliError("请先配置收藏夹 ID")
+            return await self._post_form("https://api.bilibili.com/x/v3/fav/resource/deal",
+                                         {"rid": aid, "type": 2, "add_media_ids": folder_id, "csrf": csrf})
+        raise BiliError("不支持的动作")
+
+    async def season(self, season_id: str = "", ep_id: str = "") -> dict:
+        response = await self._client.get("https://api.bilibili.com/pgc/view/web/season",
+                                         params={"season_id": season_id} if season_id else {"ep_id": ep_id},
+                                         headers=self._headers())
+        data = response.json()
+        if data.get("code") != 0:
+            raise BiliError(f"番剧详情不可用：{data.get('code')}")
+        return data.get("result") or {}
+
+    async def search_seasons(self, keyword: str) -> list[dict]:
+        url = await self._signed("https://api.bilibili.com/x/web-interface/wbi/search/type",
+                                 {"search_type": "media_bangumi", "keyword": keyword})
+        return (await self._get(url) or {}).get("result") or []
+
+    async def episode_sources(self, ep_id: str) -> dict:
+        response = await self._client.get("https://api.bilibili.com/pgc/player/web/playurl",
+                                         params={"ep_id": ep_id, "qn": 32, "fnval": 16},
+                                         headers=self._headers())
+        data = response.json()
+        if data.get("code") != 0:
+            raise BiliError(f"本账号无法播放这一集：{data.get('code')}")
+        result = data.get("result") or data.get("data") or {}
+        direct = result.get("durl") or []
+        if direct:
+            return {"video": direct[0].get("url", ""), "audio": direct[0].get("url", "")}
+        dash = result.get("dash") or {}
+        pick = lambda rows: str(rows[0].get("baseUrl") or rows[0].get("base_url") or "") if rows else ""
+        return {"video": pick(dash.get("video") or []), "audio": pick(dash.get("audio") or [])}
