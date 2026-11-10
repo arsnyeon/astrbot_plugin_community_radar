@@ -2,9 +2,7 @@
 import asyncio
 import importlib
 import json
-import logging
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import types
@@ -26,7 +24,10 @@ async def run():
     for name, function in inspect.getmembers(main.CommunityRadarPlugin, inspect.isfunction):
         if function.__module__ == 'radar_runtime_check.main':
             owned.append(name)
-    for name in ('_on_recent_share', '_on_community_link', 'radar_cmd', '_t_radar_share', 'radar_recall_tool'):
+    for name in ('_on_recent_share', '_on_community_link', '_on_known_terms',
+                 '_on_platform_trouble', 'radar_cmd', 'radar_login_cmd',
+                 'radar_cookie_cmd', 'radar_watchlist_cmd', 'radar_knowledge_cmd',
+                 '_t_radar_share', 'radar_recall_tool'):
         assert name in owned, ('handler not owned by entry module', name)
     checks['entry_owned_methods'] = len(owned)
     with tempfile.TemporaryDirectory(prefix="radar_smoke_") as folder:

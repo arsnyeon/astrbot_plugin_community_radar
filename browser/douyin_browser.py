@@ -27,6 +27,8 @@ from typing import Any
 import httpx
 from astrbot.api import logger
 
+from ..core.paths import data_dir
+
 HOME = "https://www.douyin.com/"
 BASE_PARAMS = {
     "device_platform": "webapp", "aid": "6383", "channel": "channel_pc_web",
@@ -190,16 +192,14 @@ class DouyinBrowser:
         self._chrome_proc: subprocess.Popen | None = None
         self._xvfb_proc: subprocess.Popen | None = None
         self._lock = asyncio.Lock()
-        self._probe_client = httpx.AsyncClient(timeout=2.0)
+        # 探测用的 httpx client 会在 close() 里关闭；对象本身还会被复用，
+        # 所以按需重建，不能一直持有已关闭的 client。
+        self._probe_client: httpx.AsyncClient | None = None
 
     @staticmethod
     def _default_data_dir() -> str:
         """AstrBot 标准插件数据目录：天然持久化，卸载时勾「删除数据」也能一起清掉。"""
-        try:
-            from astrbot.api.star import StarTools
-            return str(StarTools.get_data_dir("astrbot_plugin_community_radar"))
-        except Exception:  # noqa: BLE001
-            return "/AstrBot/data/plugin_data/astrbot_plugin_community_radar"
+        return str(data_dir())
 
     # ── 生命周期 ────────────────────────────────────────────────
 
@@ -218,9 +218,17 @@ class DouyinBrowser:
         from ..browser.browser_runtime import find_browser
         return find_browser(self.browser_path)
 
+    def _probe(self) -> httpx.AsyncClient:
+        """返回可用的探测客户端；``close()`` 之后按需重建。"""
+        client = self._probe_client
+        if client is None or client.is_closed:
+            client = httpx.AsyncClient(timeout=2.0)
+            self._probe_client = client
+        return client
+
     async def _cdp_alive(self) -> bool:
         try:
-            r = await self._probe_client.get(f"http://127.0.0.1:{self.port}/json/version")
+            r = await self._probe().get(f"http://127.0.0.1:{self.port}/json/version")
             return r.status_code == 200
         except Exception:  # noqa: BLE001
             return False
@@ -343,8 +351,10 @@ class DouyinBrowser:
             if proc and proc.poll() is None:
                 self._stop_proc(proc)
         self._chrome_proc = self._xvfb_proc = None
+        client, self._probe_client = self._probe_client, None
         try:
-            await self._probe_client.aclose()
+            if client is not None:
+                await client.aclose()
         except Exception:  # noqa: BLE001
             pass
 
@@ -452,7 +462,7 @@ class DouyinBrowser:
         return v
 
     async def search_videos(self, keyword: str, limit: int = 5) -> list[dict]:
-        """Resolve a topic to actual aweme IDs using the authenticated web session."""
+        """用已登录的网页会话，把关键词解析成具体作品。"""
         payload = await self._api("/aweme/v1/web/general/search/single/", {
             "keyword": str(keyword)[:80], "search_channel": "aweme_video_web",
             "search_source": "normal_search", "query_correct_type": 1,

@@ -1,4 +1,7 @@
-"""Normalize existing read clients without inventing unsupported capabilities."""
+"""把现有只读客户端适配成统一内容结构。
+
+只声明各平台确实具备的能力，缺失的接口不假装存在。
+"""
 from .platform_contracts import Content, Media, Capabilities, AdapterRegistry
 
 
@@ -45,8 +48,41 @@ class HeyboxAdapter:
         return self.normalize(await self.client.detail(native_id))
 
 
+class TiebaAdapter:
+    """贴吧只读适配器。
+
+    匿名状态可搜索帖子并取得首帖正文，楼层回复需要登录，因此
+    ``detail`` 的能力声明包含搜索与图片，但不承诺完整楼层。
+    """
+
+    name = 'tieba'
+    capabilities = Capabilities(search=True, images=True)
+
+    def __init__(self, client):
+        self.client = client
+
+    def normalize(self, value):
+        return Content(
+            self.name,
+            str(value.get('tid') or ''),
+            str(value.get('url') or ''),
+            title=str(value.get('title') or ''),
+            author=str(value.get('author') or ''),
+            text=str(value.get('text') or ''),
+            media=[Media('post_image', url) for url in value.get('images') or [] if isinstance(url, str)],
+            limitations=['贴吧楼层回复需要登录，检索结果不是完整讨论'],
+        )
+
+    async def search(self, keyword, limit=5):
+        found = await self.client.search(keyword, limit=limit)
+        return [self.normalize(item) for item in found[:limit] if item.get('tid')]
+
+
 def read_registry(plugin):
     registry = AdapterRegistry()
     registry.register(BiliAdapter(plugin.bili))
     registry.register(HeyboxAdapter(plugin.heybox))
+    tieba_client = getattr(plugin, "tieba", None)
+    if tieba_client is not None:
+        registry.register(TiebaAdapter(tieba_client))
     return registry

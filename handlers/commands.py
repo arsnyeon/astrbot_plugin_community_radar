@@ -1,46 +1,38 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""社区雷达：B 站 / 小黑盒 / 抖音浏览与互动插件。
+"""社区雷达：命令入口。
 
-- B 站：搜索、热门、视频信息、评论（读免登录）；发评论 / 点赞（需 Cookie）。
+按平台归类：
+
+- B 站：搜索、热门、视频信息、评论（读免登录）；发评论 / 点赞 / 回复 / 私信（需 Cookie）。
 - 小黑盒：信息流、搜索（读免登录）；评论 / 点赞 / 发帖（需 Cookie）。
 - 抖音热榜：官方公开接口，零浏览器 / 零签名 / 零登录。
 - 抖音推荐流与互动：按需拉起的有头浏览器（Xvfb + Chromium + CDP），
   页面内 fetch 免算 a_bogus，支持点赞 / 评论 / 分享，带限额与风控闸门。
-- 定时浏览：按兴趣关键词主动搜索，按设定时间浏览三个社区并聊给主人听。
-- 分享链接接话：有人发社区链接时先看过内容，再让模型自然接话。
+- 雷达自身：状态、立即浏览、记忆、兴趣、知识、待看列表、预演、周记、补看。
+- 登录：B 站扫码续期，其余平台手动填 cookie。
+
+命令只做参数校验与调用，具体逻辑在 ``services/`` 与 ``core/`` 中。
 """
 from __future__ import annotations
 
 import asyncio
-from .registration import entry_handler
-import json
-import re
 import time
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.provider import ProviderRequest
-from astrbot.api.star import Context, Star, register
-from astrbot.core.agent.message import TextPart
-from astrbot.core.message.components import Plain
+from astrbot.core.message.components import Image, Plain
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.star.filter.command import GreedyStr
 
-from ..clients.bili import BiliClient, BiliError, find_video_id
-from ..services.bili_duty import BiliDuty
-from ..services.duty import BrowseDuty
-from ..browser.douyin_browser import DouyinBrowser
-from ..services.douyin_duty import DouyinDuty
+from .registration import entry_handler
+
+from ..clients.bili import BiliError, find_video_id
+from ..clients.bili_login import EXPIRED, SUCCESS, BiliLogin, BiliLoginError
 from ..clients.douyin_feed import DouyinFeed
-from ..clients.heybox import HeyboxClient, HeyboxError
-from ..media.link_peek import LinkPeek
-from ..services.topic_watch import TopicWatch
-from ..media.video_watch import VideoWatch
-from ..core.radar_core import RadarStore, RadarAI, Cognition, RadarMemoryAPI, verified
-from ..api.radar_explore import RadarExploreAPI
-from ..core.radar_session import recent as recent_session_share, ids as session_share_ids
-from ..services.radar_services import RadarServices
+from ..clients.heybox import HeyboxError
+from ..core.radar_core import verified
+from ..media.qr import png_bytes as qr_png
 
 
 
@@ -61,7 +53,7 @@ class CommandsMixin:
             yield event.plain_result(f"搜索失败：{exc}")
             return
         if not items:
-            yield event.plain_result("没搜到。")
+            yield event.plain_result("没搜到相关的内容，换个说法可能更好找。")
             return
         lines = []
         for v in items[:8]:
@@ -79,7 +71,7 @@ class CommandsMixin:
             yield event.plain_result(f"获取失败：{exc}")
             return
         lines = [f"{i + 1}. {v['title']}\n  BV:{v['bvid']}  UP:{v['author']}  播放:{v['play']}" for i, v in enumerate(items[:10])]
-        yield event.plain_result("\n\n".join(lines) or "没拿到热门。")
+        yield event.plain_result("\n\n".join(lines) or "这会儿没拿到热门列表，过一会儿再试试。")
 
     @filter.command("b站视频", alias={"B站视频"}, desc="查看 B 站视频信息")
     @entry_handler
@@ -120,7 +112,7 @@ class CommandsMixin:
             yield event.plain_result(f"评论获取失败：{exc}")
             return
         if not items:
-            yield event.plain_result("没评论或评论关了。")
+            yield event.plain_result("这条下面没有能看的评论，可能是关了或者还没人说话。")
             return
         lines = [f"{c['name']}（赞{c['like']}）：{c['text']}" for c in items]
         yield event.plain_result(f"《{info['title']}》热评：\n" + "\n".join(lines))
@@ -133,7 +125,7 @@ class CommandsMixin:
             return
         yield event.plain_result("去 B 站刷一会儿…")
         r = await self.bili_duty.browse(owner_asked=True)
-        yield event.plain_result(r.get("message") or "刷完了")
+        yield event.plain_result(r.get("message") or "这轮逛完了")
 
     @filter.command("b站状态", alias={"b站浏览状态"}, desc="看 B 站自主浏览的状态与今日额度")
     @entry_handler
@@ -162,7 +154,7 @@ class CommandsMixin:
             return
         bvid, rpid, text = parts
         r = await self.bili_duty.reply(bvid.strip(), rpid.strip(), text.strip())
-        yield event.plain_result(r.get("message") or "没发成")
+        yield event.plain_result(r.get("message") or "这条没发出去，稍后再试试")
 
     @filter.command("b站私信", desc="给主人发一条 B 站私信")
     @entry_handler
@@ -185,13 +177,13 @@ class CommandsMixin:
             if not arg or arg.lower() in {"feed", "信息流", "热榜"}:
                 items = await self.heybox.feed(0)
                 lines = [f"{x['title']}\n  ID:{x['link_id']}  赞{x['likes']} 评{x['comments']}" for x in items[:10]]
-                yield event.plain_result("\n\n".join(lines) or "没拿到信息流。")
+                yield event.plain_result("\n\n".join(lines) or "信息流暂时没取到，稍后再看看。")
                 return
             if arg.lower().startswith("search ") or arg.startswith("搜索 "):
                 q = arg.split(" ", 1)[1]
                 items = await self.heybox.search(q)
                 lines = [f"{x['title']}\n  ID:{x['link_id']}  赞{x['likes']} 评{x['comments']}" for x in items[:8]]
-                yield event.plain_result("\n\n".join(lines) or "没搜到。")
+                yield event.plain_result("\n\n".join(lines) or "没搜到相关的内容，换个说法可能更好找。")
                 return
             yield event.plain_result("用法：/小黑盒（信息流）或 /小黑盒 search 关键词")
         except HeyboxError as exc:
@@ -282,7 +274,7 @@ class CommandsMixin:
 
         if sub in ("热搜词", "trending"):
             items = await self.douyin_feed.trending(8)
-            yield event.plain_result("\n".join(f"· {x['title']} {x['url']}" for x in items) or "没拿到趋势词。")
+            yield event.plain_result("\n".join(f"· {x['title']} {x['url']}" for x in items) or "这次没取到趋势词，待会儿再试。")
             return
 
         if not self._is_owner(event):
@@ -392,6 +384,8 @@ class CommandsMixin:
         if sub in ("", "状态", "status"):
             plan = self.duty.autopilot.plan(cfg, topics=self.topic_watch.queue(4))
             topic_line = self.topic_watch.brief(4) or "还没有"
+            curious = self.radar_store.curiosity(4)
+            curious_line = f"\n自己想去搜的：{'、'.join(curious)}" if curious else ""
             yield event.plain_result(
                 f"自动浏览：{'开' if cfg.get('enable') else '关'}"
                 f"  下次：{self.duty.next_run_text()}\n"
@@ -402,8 +396,9 @@ class CommandsMixin:
                 f"  每次搜 {cfg.get('search_per_run', 2)} 个\n"
                 f"这轮打算：{plan.get('reason') or '随便逛逛'}"
                 f"（{'、'.join(plan.get('platforms') or []) or '无'}）\n"
-                f"最近搜过：{'、'.join(self.duty._recent_keywords(6)) or '还没有'}\n"
-                f"想去看看的话题：\n{topic_line}"
+                f"最近搜过：{'、'.join(self.duty._recent_keywords(6)) or '还没有'}"
+                + curious_line
+                + f"\n想去看看的话题：\n{topic_line}"
             )
             return
         if sub in ("逛", "现在逛", "go", "now"):
@@ -444,7 +439,226 @@ class CommandsMixin:
             "/社区雷达 清话题（清空话题队列）"
         )
 
-    @filter.command("看视频", alias={"b站看视频", "看懂"}, desc="让它看懂一条 B 站 / 抖音 / 小黑盒的内容")
+    @filter.command("雷达登录", alias={"雷达扫码", "扫码登录"}, desc="内容平台登录：B 站扫码，其它平台填 cookie")
+    @entry_handler
+    async def radar_login_cmd(self, event: AstrMessageEvent, arg: GreedyStr = ""):
+        """内容平台登录入口。
+
+        不带参数时列出各平台的登录方式；带 ``bili`` 走扫码；抖音与小黑盒没有稳定的
+        扫码接口，改为指向 ``/雷达填cookie``，避免给出一个点了没反应的选择。
+
+        Args:
+            arg: 平台名，可空。
+        """
+        if not self._is_owner(event):
+            yield event.plain_result("这个我就不给别人用了，得主人自己来。")
+            return
+        platform = str(arg or "").strip().lower()
+        if platform in ("bili", "b站", "哔哩哔哩"):
+            target = str(getattr(event, "unified_msg_origin", "") or "")
+            if not target:
+                yield event.plain_result("这个会话我发不了图，你在私聊里再喊我一次？")
+                return
+            try:
+                ticket = await BiliLogin().generate()
+            except BiliLoginError as exc:
+                yield event.plain_result(f"二维码没生成出来：{exc}")
+                return
+            except Exception as exc:  # noqa: BLE001
+                yield event.plain_result(f"二维码没生成出来（{type(exc).__name__}）。")
+                return
+            image = qr_png(ticket["url"])
+            intro = ("B 站那边要重新登一下，你扫这个二维码就行，"
+                     "扫完我会自己接着用，不用再管。")
+            if image:
+                yield event.chain_result([Plain(intro), Image.fromBytes(image)])
+            else:
+                yield event.plain_result(intro + f"\n二维码内容：{ticket['url']}")
+            asyncio.create_task(self._finish_bili_login(ticket["key"], target))
+            return
+        if platform in ("douyin", "抖音"):
+            yield event.plain_result(
+                "抖音的登录要在浏览器里点，我这边没法可靠地截到那张二维码，所以先手动来："
+                "把浏览器里登录后的 cookie 复制给 /雷达填cookie douyin <内容>，我就能用它去看了。"
+            )
+            return
+        if platform in ("heybox", "小黑盒"):
+            yield event.plain_result(
+                "小黑盒匿名能看信息流，但打开帖子会要验证码；想让我读正文的话，"
+                "把登录后的 cookie 用 /雷达填cookie heybox <内容> 发我。"
+            )
+            return
+        yield event.plain_result(self._login_menu())
+
+    def _login_menu(self) -> str:
+        """列出各平台的登录方式与当前状态。"""
+        bili = "已填" if str(self.config.get("bili_cookie") or "").strip() else "未填"
+        heybox = "已填" if str(self.config.get("heybox_cookie") or "").strip() else "未填"
+        douyin = "已开" if (self.config.get("douyin") or {}).get("enabled") else "未开"
+        return (
+            "想让我登哪个？现在是这样：\n"
+            f"· B 站：{bili}，能扫码 —— /雷达登录 bili\n"
+            f"· 抖音：{douyin}，要手动贴 cookie —— /雷达填cookie douyin <内容>\n"
+            f"· 小黑盒：{heybox}，要手动贴 cookie —— /雷达填cookie heybox <内容>"
+        )
+
+    @filter.command("雷达填cookie", alias={"填cookie"}, desc="手动给某个平台填 cookie")
+    @entry_handler
+    async def radar_cookie_cmd(self, event: AstrMessageEvent, arg: GreedyStr = ""):
+        """手动写入平台 cookie，适合没有稳定扫码接口的平台。
+
+        格式：``/雷达填cookie bili SESSDATA=...; bili_jct=...``
+        """
+        if not self._is_owner(event):
+            yield event.plain_result("cookie 这种就不给别人填了。")
+            return
+        text = str(arg or "").strip()
+        platform, _, value = text.partition(" ")
+        key = platform.strip().lower()
+        value = value.strip()
+        if not key or not value:
+            yield event.plain_result("给我平台和内容，比如：/雷达填cookie heybox 一长串 cookie")
+            return
+        field = {"bili": "bili_cookie", "b站": "bili_cookie",
+                 "heybox": "heybox_cookie", "小黑盒": "heybox_cookie"}.get(key)
+        if field:
+            self.config[field] = value
+        elif key in ("douyin", "抖音"):
+            douyin_cfg = self.config.setdefault("douyin", {})
+            douyin_cfg["cookie"] = value
+            douyin_cfg["enabled"] = True
+        else:
+            yield event.plain_result("这个平台我还不认识，目前支持 bili / heybox / douyin。")
+            return
+        try:
+            saver = getattr(self.config, "save_config_async", None)
+            if saver is not None:
+                await saver()
+            else:  # pragma: no cover - 老版本 AstrBot 兜底
+                self.config.save_config()
+        except Exception as exc:  # noqa: BLE001
+            yield event.plain_result(f"收到，但保存时出了点问题（{type(exc).__name__}），你可能得在面板里手动填。")
+            return
+        try:
+            if field == "bili_cookie":
+                self.bili.cookie = value
+            if field == "heybox_cookie":
+                self.heybox.cookie = value
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.health.clear_auth("bili" if field == "bili_cookie" else key)
+        except Exception:  # noqa: BLE001
+            pass
+        yield event.plain_result("收到，换上了。我试试还通不通。")
+
+    async def _finish_bili_login(self, key: str, target: str) -> None:
+        """在后台等待扫码结果，成功后保存 cookie 并说一声。
+
+        Args:
+            key: 轮询用的二维码 key。
+            target: 结果通知发到哪个会话。
+        """
+        import time
+
+        client = BiliLogin()
+        deadline = time.time() + 150
+        while time.time() < deadline:
+            await asyncio.sleep(3)
+            try:
+                result = await client.poll(key)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"[CommunityRadar] 扫码轮询失败（{type(exc).__name__}）")
+                continue
+            if result["state"] == SUCCESS:
+                await self._save_bili_cookie(result["cookie"], target)
+                return
+            if result["state"] == EXPIRED:
+                await self._say(target, "二维码过期了，想登的话再跟我说一声。")
+                return
+        await self._say(target, "等了一会儿没扫，这次就先算了，需要的时候再喊我。")
+
+    async def _save_bili_cookie(self, cookie: str, target: str) -> None:
+        """把登录得到的 cookie 写进配置并让客户端立即生效。"""
+        try:
+            self.config["bili_cookie"] = cookie
+            saver = getattr(self.config, "save_config_async", None)
+            if saver is not None:
+                await saver()
+            else:  # pragma: no cover - 老版本 AstrBot 兜底
+                self.config.save_config()
+        except Exception as exc:  # noqa: BLE001
+            await self._say(target, f"登录成功，但保存时出了点问题（{type(exc).__name__}），你可能得手动填一下 cookie。")
+            return
+        try:
+            self.bili.cookie = cookie
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.health.clear_auth("bili")
+        except Exception:  # noqa: BLE001
+            pass
+        await self._say(target, "扫上了，B 站这边续好了，我接着逛。")
+
+    async def _say(self, target: str, text: str) -> None:
+        """直接往某个会话说一句话，失败只记日志。"""
+        try:
+            await self.context.send_message(target, MessageChain([Plain(text)]))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[CommunityRadar] 登录提示没发出去（{type(exc).__name__}）")
+
+    @filter.command("雷达待看", alias={"雷达想看"}, desc="看看她记下了哪些想刷的东西")
+    @entry_handler
+    async def radar_watchlist_cmd(self, event: AstrMessageEvent):
+        """查看「想刷列表」：聊天里她感兴趣、打算之后自己去看的内容。"""
+        board = getattr(self, "watchlist", None)
+        if board is None:
+            yield event.plain_result("列表还没准备好。")
+            return
+        try:
+            brief = board.brief(8)
+            size = board.size()
+        except Exception as exc:  # noqa: BLE001
+            yield event.plain_result(f"读列表时出了点问题：{type(exc).__name__}")
+            return
+        if not size:
+            yield event.plain_result("这会儿没什么特别想看的，聊天里碰到有意思的我会记着。")
+            return
+        yield event.plain_result(f"我记了 {size} 条想看的，过会儿自己去刷：\n{brief}")
+
+    @filter.command("雷达知识", alias={"雷达学到"}, desc="查看它从社区里学到的东西")
+    @entry_handler
+    async def radar_knowledge_cmd(self, event: AstrMessageEvent, arg: GreedyStr = ""):
+        """查看长期积累的知识、术语与梗。
+
+        知识条目与会随时间压缩的观看记忆分开保存，不会因为过去多久而消失。
+        """
+        query = str(arg or "").strip()
+        book = getattr(self, "knowledge", None)
+        if book is None:
+            yield event.plain_result("知识库还没准备好。")
+            return
+        items = book.search(query, 10) if query else book.recent(10)
+        if not items:
+            yield event.plain_result(
+                f"还没有「{query}」相关的记录。" if query else "还没学到什么，让我多逛几天。")
+            return
+        labels = {"knowledge": "知道", "meme": "梗", "term": "名词"}
+        lines = []
+        for item in items:
+            label = labels.get(item.get("kind") or "knowledge", "知道")
+            line = f"· [{label}] {item.get('body')}"
+            title = str(item.get("title") or "").strip()
+            if title:
+                line += f"\n    来自《{title[:30]}》"
+            lines.append(line)
+        stats = book.stats()
+        header = f"共 {stats['total']} 条（知识 {stats['knowledge']}、梗 {stats['meme']}、名词 {stats['term']}）"
+        if query:
+            header = f"关于「{query}」找到 {len(items)} 条 / {header}"
+        yield event.plain_result(header + "\n\n" + "\n".join(lines))
+
+    @filter.command("看视频", alias={"b站看视频", "看懂"}, desc="让它看懂一条 B 站 / 抖音 / 小黑盒 / 贴吧的内容")
     @entry_handler
     async def watch_video_cmd(self, event: AstrMessageEvent, ref: GreedyStr):
         ref = (ref or "").strip()
@@ -497,9 +711,38 @@ class CommandsMixin:
             return
         activity = self.radar_memory_api.activity()
         plan = self.radar_store.get("last_plan", {})
+        last = self.radar_store.get("last_browse", {})
+        lines = [
+            f"当前：{activity.get('stage', 'idle')} {activity.get('title', '')}",
+            f"最近计划：{plan.get('reason', '尚未形成')}",
+            f"下次浏览：{self.duty.next_run_text()}",
+        ]
+        if last:
+            when = time.strftime("%m-%d %H:%M", time.localtime(float(last.get("at") or 0)))
+            if "reason" in last:
+                lines.append(f"上一轮（{when}）：{last['reason']}")
+            else:
+                said = "发了" if last.get("shared") else "没发"
+                lines.append(f"上一轮（{when}）：看懂 {int(last.get('analyzed') or 0)} 条，{said}")
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command("雷达预演", desc="查看上一轮分享试运行准备发送的内容")
+    @entry_handler
+    async def radar_preview_cmd(self, event: AstrMessageEvent):
+        if not self._is_owner(event):
+            yield event.plain_result("只有主人能看分享预演。")
+            return
+        preview = self.radar_store.get("last_preview", {})
+        if not preview:
+            yield event.plain_result(
+                "还没有预演记录。把配置里「主动分享 → 分享试运行」打开，等它逛一轮再来看。")
+            return
+        when = time.strftime("%m-%d %H:%M", time.localtime(float(preview.get("at") or 0)))
+        parts = [str(p) for p in (preview.get("parts") or []) if str(p).strip()]
+        targets = [str(t) for t in (preview.get("targets") or [])]
+        body = "\n\n".join(f"{i}. {p}" for i, p in enumerate(parts, 1)) or "（这一轮没有生成文案）"
         yield event.plain_result(
-            f"当前：{activity.get('stage', 'idle')} {activity.get('title', '')}\n"
-            f"最近计划：{plan.get('reason', '尚未形成')}\n下次浏览：{self.duty.next_run_text()}")
+            f"上一轮预演（{when}），本来要发给：{'、'.join(targets) or '无目标'}\n\n{body}")
 
     @filter.command("雷达补看", desc="按问题补看指定片段")
     @entry_handler

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import hashlib
 import json
 import random
 import re
@@ -19,11 +20,13 @@ from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
+from ..core.statefile import read_json, write_json
 from ..core.radar_core import number, verified, parse_json
 from astrbot.core.message.components import Plain
 from astrbot.core.message.message_event_result import MessageChain
 
-from ..browser.douyin_browser import BrowserError, DouyinBrowser, digest_of
+from ..browser.douyin_browser import BrowserError, DouyinBrowser
+from ..media.comments import collect as collect_comments, digest_of
 
 STOP_RE = re.compile(r"验证|频繁|稍后再试|异常|限制|风控")
 
@@ -79,6 +82,7 @@ class DouyinDuty:
         self._task: asyncio.Task | None = None
         self._busy = False
         self._write_lock = asyncio.Lock()
+        self._bg: set[asyncio.Task] = set()
         self.s = self._load()
 
     # ── 状态 ────────────────────────────────────────────────────
@@ -93,11 +97,8 @@ class DouyinDuty:
         }
 
     def _load(self) -> dict:
-        try:
-            raw = json.loads(self.state_file.read_text(encoding="utf-8"))
-            s = {**self._empty(), **(raw if isinstance(raw, dict) else {})}
-        except Exception:  # noqa: BLE001
-            s = self._empty()
+        raw, _ = read_json(self.state_file, {})
+        s = {**self._empty(), **(raw if isinstance(raw, dict) else {})}
         if s.get("day") != _day():
             for k in ("runs", "watched", "like", "comment", "share", "writes"):
                 s[k] = 0
@@ -107,11 +108,7 @@ class DouyinDuty:
         return s
 
     def _save(self) -> None:
-        try:
-            self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            self.state_file.write_text(json.dumps(self.s, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[CommunityRadar] 抖音状态保存失败: {exc}")
+        write_json(self.state_file, self.s, indent=2)
 
     def _record(self, kind: str, **kw) -> None:
         self.s.setdefault("history", []).insert(0, {"at": int(time.time()), "kind": kind, **kw})
@@ -147,27 +144,57 @@ class DouyinDuty:
         return self.s.get("pause_day") == _day()
 
     def _blocked(self, kind: str) -> str:
+        why = ""
         if not self.cfg.get("enabled"):
-            return "抖音写层没打开"
-        if self._paused():
-            return "今天暂停了：" + str(self.s.get("pause_reason") or "被风控了")
-        if self._left(kind) <= 0:
-            return f"今天{kind}次数用完了"
-        maxw = int(float(self.cfg.get("max_writes_per_day", 15)) * (0.5 if self._is_new() else 1.0))
-        if self.s.get("writes", 0) >= maxw:
-            return "今天在抖音上动手的次数用完了"
-        gap = int(self.cfg.get("min_write_gap_sec", 90)) * 1000
-        wait = gap - (time.time() * 1000 - self.s.get("last_write_at", 0) * 1000)
-        if wait > 0:
-            return f"动作太密了，再等 {int(wait / 1000) + 1} 秒"
-        return ""
+            why = "抖音写层没打开"
+        elif self._paused():
+            why = "今天暂停了：" + str(self.s.get("pause_reason") or "被风控了")
+        elif self._left(kind) <= 0:
+            why = f"今天{kind}次数用完了"
+        else:
+            maxw = int(float(self.cfg.get("max_writes_per_day", 15)) * (0.5 if self._is_new() else 1.0))
+            if self.s.get("writes", 0) >= maxw:
+                why = "今天在抖音上动手的次数用完了"
+            else:
+                gap = int(self.cfg.get("min_write_gap_sec", 90)) * 1000
+                wait = gap - (time.time() * 1000 - self.s.get("last_write_at", 0) * 1000)
+                if wait > 0:
+                    why = f"动作太密了，再等 {int(wait / 1000) + 1} 秒"
+        # /抖音 状态 的「上次没动手」需要这里留下原因。
+        if why and self.s.get("last_skip_reason") != why:
+            self.s["last_skip_reason"] = why
+            self._save()
+        return why
 
     def _pause(self, why: str) -> None:
         self.s["pause_day"] = _day()
         self.s["pause_reason"] = _clip(why, 60) or "被风控了"
         self._save()
         logger.warning(f"[CommunityRadar] 抖音今天停手：{self.s['pause_reason']}")
-        asyncio.create_task(self._notify(f"抖音那边要验证 / 被限制了，今天先不点赞评论了：{self.s['pause_reason']}。用 /抖音 登录 或 /抖音 状态 看看。"))
+        self._background(self._notify(
+            f"抖音那边要验证 / 被限制了，今天先不点赞评论了：{self.s['pause_reason']}。"
+            "用 /抖音 登录 或 /抖音 状态 看看。"
+        ))
+
+    def _background(self, coro) -> asyncio.Task:
+        """把协程放到后台执行并持有强引用，避免任务被回收、异常无人取回。"""
+        task = asyncio.create_task(coro)
+        self._bg.add(task)
+
+        def _done(finished: asyncio.Task) -> None:
+            self._bg.discard(finished)
+            if not finished.cancelled():
+                finished.exception()
+
+        task.add_done_callback(_done)
+        return task
+
+    def _mark_login(self) -> None:
+        """第一次确认账号可用时记下时间；新号保护期从这里开始算。"""
+        if self.s.get("login_at"):
+            return
+        self.s["login_at"] = time.time()
+        self._save()
 
     def _on_error(self, exc: Exception) -> None:
         code = getattr(exc, "code", "")
@@ -177,6 +204,7 @@ class DouyinDuty:
     # ── 推送 ────────────────────────────────────────────────────
 
     def _targets(self) -> list[str]:
+        """本轮推送目标：抖音自己的 targets 优先，否则回退主人私聊。"""
         cfg = self.cfg
         t = [str(x).strip() for x in (cfg.get("targets") or []) if str(x).strip()]
         if t:
@@ -184,16 +212,40 @@ class DouyinDuty:
         try:
             return [self.plugin.duty._default_target(cfg)]
         except Exception:  # noqa: BLE001
-            admin = str(self.plugin.config.get("admin_uin") or "").strip()
-            return [f"default:FriendMessage:{admin}"] if admin else []
+            try:
+                owner = self.plugin._owner_umo()
+            except Exception:  # noqa: BLE001
+                owner = ""
+            return [owner] if owner else []
 
-    async def _send(self, text: str) -> None:
+    async def _send(self, text: str) -> bool:
+        """推送给主人；和主动分享共用同一个每日额度与去重，不另开一条旁路。"""
+        text = str(text or "").strip()
+        if not text:
+            return False
+        share_cfg = self.plugin.config.get("share") or {}
+        if not share_cfg.get("enable", True):
+            return False
+        key = "text:" + hashlib.sha256(text.encode()).hexdigest()
+        delivered = False
         for umo in self._targets():
+            token, _ = self.plugin.radar_store.reserve(
+                "share", umo, key,
+                int(number(share_cfg, "max_per_day", 8, 0, 100)),
+                number(share_cfg, "cooldown_sec", 600, 0, 86400))
+            if not token:
+                continue
             try:
                 await self.plugin.context.send_message(umo, MessageChain([Plain(text)]))
-                logger.info(f"[CommunityRadar] 抖音推送到 {umo}")
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(f"[CommunityRadar] 抖音推送到 {umo} 失败: {exc}")
+            except BaseException:
+                # 发送异常无法证明平台没收到，按未知结果占额度且不重试。
+                self.plugin.radar_store.finish(token, "unknown")
+                logger.warning(f"[CommunityRadar] 抖音推送到 {umo} 结果未知，未重试")
+                continue
+            self.plugin.radar_store.finish(token, "success")
+            delivered = True
+            logger.info(f"[CommunityRadar] 抖音推送到 {umo}")
+        return delivered
 
     async def _notify(self, text: str) -> None:
         await self._send(f"【社区雷达·抖音】{text}")
@@ -227,6 +279,9 @@ class DouyinDuty:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        for task in list(self._bg):
+            task.cancel()
+        self._bg.clear()
         try:
             await self.b.close()
         except Exception:  # noqa: BLE001
@@ -298,19 +353,39 @@ class DouyinDuty:
         for item in items:
             item["_link"] = item["url"]
         selected = await self.plugin.cognition.choose(items, self.plugin.config.get("browse") or {})
-        looked, digests = [], []
+        # 先把这一轮想看的都看完，一起翻完评论区，再统一回味、统一决定说什么。
+        looked = []
         for item in selected[:left]:
             result = await self.plugin.video_watch.douyin(item["url"], self.plugin.config.get("video") or {})
             if not verified(result):
                 continue
-            await self.plugin.cognition.review(result)
             item["_evidence"] = result
             item["_comments"] = []
             looked.append(item)
-            digests.append(f"#{len(looked)}\n实际内容：{result['digest'][:4500]}")
             if not result.get("from_cache"):
                 self.s["watched"] += 1
             seen.add(item["aweme_id"])
+        video_cfg = self.plugin.config.get("video") or {}
+        if video_cfg.get("read_comments", True):
+            for item in looked:
+                comments = await collect_comments(
+                    self.plugin, item["_evidence"], int(number(video_cfg, "comment_samples", 8, 0, 20)))
+                if not comments:
+                    continue
+                item["_comments"] = comments
+                item["_evidence"]["comments"] = comments
+                hint = digest_of(comments)
+                if hint:
+                    item["_evidence"]["digest"] = str(item["_evidence"].get("digest") or "") + "\n评论区：\n" + hint
+        digests = []
+        for index, item in enumerate(looked, 1):
+            item["_review"] = await self.plugin.cognition.review(
+                item["_evidence"], comments=item["_evidence"].get("comments") or [])
+            room = ""
+            if item["_evidence"].get("comments"):
+                room = "\n评论区：" + " / ".join(
+                    f"{c['name']}：{c['text']}" for c in item["_evidence"]["comments"][:5])
+            digests.append(f"#{index}\n实际内容：{item['_evidence']['digest'][:4500]}{room}")
         self.s["seen"] = sorted(seen)[-300:]
         self.s["last_run"] = time.time()
         self.s["next_due_at"] = self._next_due_at()
@@ -337,7 +412,8 @@ class DouyinDuty:
                 self.s["share"] += 1
                 self._save()
         return {"ok": True, "message": ("\n".join(shares + done) or f"取得了{len(looked)}条内容依据，没有想互动的")
-                if owner_asked else "", "watched": len(looked)}
+                if owner_asked else "", "watched": len(looked),
+                "titles": [str(it.get("title") or it.get("desc") or "")[:40] for it in looked]}
 
     async def _decide(self, digests: list[str], owner_asked: bool) -> list[dict]:
         """让模型按人格决定点赞/评论/分享。失败就退化为「只看不动手」。"""
@@ -406,6 +482,7 @@ class DouyinDuty:
                 except Exception:  # noqa: BLE001
                     pass
         self.s["owner"] = {**u, "input": raw, "confirmed_input": raw}
+        self.s["login_at"] = self.s.get("login_at") or time.time()
         self._save()
         extra = f"（抖音号 {u['douyin_id']}）" if u.get("douyin_id") else ""
         return {"ok": True, "message": f"核对好了：{u['nickname']}{extra}", "owner": u}
@@ -433,55 +510,6 @@ class DouyinDuty:
         if random.random() < 0.2:  # 有时就是不想刷
             factor *= 2.0
         return time.time() + base * 3600 * factor
-
-    async def _pick_comments(self, comments: list[dict], limit: int = 3) -> list[str]:
-        """按自己的人格挑它觉得有意思的评论；挑不出来就退回点赞最高的几条。"""
-        pool = [c for c in (comments or []) if str(c.get("text") or "").strip()][:15]
-        if not pool:
-            return []
-        fallback = [str(c["text"])[:40] for c in pool[:limit]]
-        provider = await self._provider()
-        if provider is None:
-            return fallback
-        lines = "\n".join(
-            f"{i + 1}. {str(c.get('text') or '')[:60]}（{c.get('likes') or 0} 赞）"
-            for i, c in enumerate(pool)
-        )
-        prompt = (
-            (f"你的人格：\n{self.persona}\n\n" if self.persona else "")
-            + "这条视频下面的评论：\n" + lines
-            + f"\n\n按你自己的口味，挑 {limit} 条你觉得最有意思、最想接一句的。"
-              "只看内容有没有意思，不用管点赞多少。"
-              "只输出 JSON 数组，元素是序号数字，例如 [2,5,7]。"
-        )
-        try:
-            resp = await provider.text_chat(
-                prompt=prompt, session_id="", contexts=[],
-                system_prompt="你只输出 JSON 数组，不输出其他内容。",
-            )
-            raw = str(getattr(resp, "completion_text", "") or "")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[CommunityRadar] 挑选评论失败，退回热评: {exc}")
-            return fallback
-
-        m = re.search(r"\[[\d,\s]*\]", raw)
-        if not m:
-            return fallback
-        try:
-            idxs = json.loads(m.group(0))
-        except Exception:  # noqa: BLE001
-            return fallback
-        picked: list[str] = []
-        for i in idxs:
-            try:
-                n = int(i) - 1
-            except Exception:  # noqa: BLE001
-                continue
-            if 0 <= n < len(pool):
-                text = str(pool[n].get("text") or "")[:40]
-                if text and text not in picked:
-                    picked.append(text)
-        return picked[:limit] or fallback
 
     async def _share(self, v: dict, text: str, digest: str = "") -> dict:
         """把视频分享给主人。按 share_to 走抖音站内私信、QQ，或两边都发。
@@ -582,7 +610,6 @@ class DouyinDuty:
                 return await self._guarded_write("share", "owner", text, lambda: self._send_dm_impl(text))
 
     async def _guarded_write(self, kind, link, text, operation):
-        import hashlib
         why = self._blocked(kind)
         if why:
             return {"ok": False, "message": why}
@@ -603,6 +630,8 @@ class DouyinDuty:
             return {"ok": False, "message": "操作结果未知，未自动重试"}
         # Existing browser helpers return failures without reliably proving no write occurred.
         self.plugin.radar_store.finish(token, "success" if result.get("ok") else "unknown")
+        if result.get("ok"):
+            self._mark_login()
         return result
 
     async def _send_dm_impl(self, text: str) -> dict:

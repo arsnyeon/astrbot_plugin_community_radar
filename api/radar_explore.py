@@ -1,7 +1,7 @@
-"""Read-only evidence lookup for other plugins.
+"""供其他插件使用的只读内容检索接口。
 
-Contract: no writes, no model calls, no messages, no browser automation.
-Callers get titles, descriptions and links; they decide what to do next.
+接口约定：不写记忆、不调用模型、不发送消息、不启动浏览器。调用方只会拿到
+标题、简介与链接，由调用方自行决定后续动作。
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from ..clients.adapters import read_registry
 
 
 class RadarExploreAPI:
-    """Small, bounded, read-only facade used by other plugins."""
+    """面向其他插件的只读门面，带超时与条数上限。"""
 
     def __init__(self, plugin: Any):
         self.plugin = plugin

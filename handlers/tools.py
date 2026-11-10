@@ -12,40 +12,17 @@
 """
 from __future__ import annotations
 
-import asyncio
-from .registration import entry_handler
 import json
-import re
-import time
 
-from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.provider import ProviderRequest
-from astrbot.api.star import Context, Star, register
-from astrbot.core.agent.message import TextPart
-from astrbot.core.message.components import Plain
-from astrbot.core.message.message_event_result import MessageChain
-from astrbot.core.star.filter.command import GreedyStr
 
-from ..clients.bili import BiliClient, BiliError, find_video_id
-from ..services.bili_duty import BiliDuty
-from ..services.duty import BrowseDuty
-from ..browser.douyin_browser import DouyinBrowser
-from ..services.douyin_duty import DouyinDuty
-from ..clients.douyin_feed import DouyinFeed
-from ..clients.heybox import HeyboxClient, HeyboxError
-from ..media.link_peek import LinkPeek
-from ..services.topic_watch import TopicWatch
-from ..media.video_watch import VideoWatch
-from ..core.radar_core import RadarStore, RadarAI, Cognition, RadarMemoryAPI, verified
-from ..api.radar_explore import RadarExploreAPI
-from ..core.radar_session import recent as recent_session_share, ids as session_share_ids
-from ..services.radar_services import RadarServices
+from .registration import entry_handler
 
+from ..clients.bili import BiliError
+from ..clients.heybox import HeyboxError
+from ..core.radar_core import verified
+from ..core.radar_session import ids as session_share_ids
 
-
-def _fmt_time(ts):
-    return time.strftime("%Y-%m-%d", time.localtime(ts)) if ts else "?"
 
 class ToolsMixin:
     @filter.llm_tool(name="bili_search")
@@ -256,7 +233,10 @@ class ToolsMixin:
         r = await self.douyin_duty.browse(owner_asked=True)
         if not r.get("ok"):
             return f"没刷成：{r.get('message')}"
-        return f"{r.get('message')}。看过：{'、'.join((r.get('titles') or [])[:5])}"
+        titles = [str(t) for t in (r.get("titles") or []) if str(t).strip()]
+        text = str(r.get("message") or "").strip()
+        summary = f"看过：{'、'.join(titles[:5])}" if titles else f"这轮实际取得内容 {int(r.get('watched') or 0)} 条"
+        return f"{text}\n{summary}" if text else summary
 
     @filter.llm_tool(name="douyin_watch")
     @entry_handler

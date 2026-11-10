@@ -6,3 +6,8 @@ __pycache__/
 .vscode/
 *.log
 data/
+
+# 插件运行期产出的临时文件，不应进入仓库
+*.tmp
+*.broken
+observed_media/

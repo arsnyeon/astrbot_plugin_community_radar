@@ -95,7 +95,7 @@ class BiliError(RuntimeError):
 
 
 class WriteUnknown(BiliError):
-    """Request may have reached Bilibili; never automatically repeat it."""
+    """请求可能已到达 B 站服务端，不允许自动重试。"""
 
 
 class BiliClient:

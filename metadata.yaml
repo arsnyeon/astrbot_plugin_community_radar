@@ -1,9 +1,8 @@
 name: astrbot_plugin_community_radar
 display_name: 社区雷达
-short_desc: 自己逛 B 站 / 抖音 / 小黑盒，跟着聊天话题挑内容，看得懂视频与图文，会带图分条分享。
-desc: "让机器人自己逛 B 站、抖音、小黑盒：按人格与聊天话题挑内容，看得懂视频与图文，会带封面分享，也能点赞、评论、回复。写操作默认试运行，有每日上限与最小间隔。"
-help: "命令：/社区雷达、/社区雷达 逛、/雷达记忆、/雷达兴趣、/雷达活动、/雷达周记、/雷达补看、/看视频、/刷b站、/抖音 帮助。"
-version: v0.17.0
+short_desc: 自己逛 B 站 / 小黑盒 / 贴吧 / 抖音，看得懂视频图文，会翻评论区再带图分享。
+desc: "让机器人像人一样逛社区：按人格与聊天话题决定逛哪、看什么，读完字幕、画面、正文与评论区才形成感想，觉得有意思才分条分享；聊天里提到的内容会记成「想刷列表」，看过的内容、兴趣与梗会长期沉淀；群里有人接着聊时会自己回一句。读取免登录，写操作默认试运行并带每日额度与最小间隔。"
+version: 0.18.0
 author: arsnyeon
 repo: https://github.com/arsnyeon/astrbot_plugin_community_radar
 astrbot_version: ">=4.29,<5"
@@ -11,3 +10,14 @@ support_platforms:
   - aiocqhttp
   - qq_official
   - telegram
+tags:
+  - bilibili
+  - B站
+  - 抖音
+  - 小黑盒
+  - 百度贴吧
+  - 自主浏览
+  - 内容理解
+  - 拟人化
+  - 主动分享
+  - 长期记忆

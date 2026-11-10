@@ -35,6 +35,10 @@ HEYBOX = re.compile(
     re.I,
 )
 
+# 链接预览挂在聊天主链路上，单条消息最多等这么久。
+TOTAL_PEEK_SECONDS = 12.0
+MIN_LINK_SECONDS = 1.5
+
 
 def _find_item(obj: Any) -> dict | None:
     """从抖音分享页的 SSR 数据里找出视频条目（结构可能随版本变化）。"""
@@ -96,26 +100,38 @@ class LinkPeek:
         lines: list[str] = []
         video_cfg = self.plugin.config.get("video") or {}
         fast_cfg = dict(video_cfg, use_frames=False, audio_transcription=False)
+        # 这个函数挂在 on_llm_request 上，等太久会直接拖慢正常回复。
+        # 所有链接共享一个总预算，超预算就只放链接。
+        deadline = time.monotonic() + TOTAL_PEEK_SECONDS
         for kind, url in found[:max_links]:
             cached = self._cache_get(url)
             if cached is None:
                 cached = ""
-                # 先用轻量方式「看懂」：字幕 / 文案 / 正文，不抽帧（避免拖慢回复）
-                if video_cfg.get("enable", True) and getattr(self.plugin, "video_watch", None):
+                budget = deadline - time.monotonic()
+                if budget < MIN_LINK_SECONDS:
+                    cached = f"{self._label(kind)} {url}"
+                elif video_cfg.get("enable", True) and getattr(self.plugin, "video_watch", None):
+                    # 先用轻量方式「看懂」：字幕 / 文案 / 正文，不抽帧（避免拖慢回复）
                     try:
                         r = await asyncio.wait_for(
-                            self.plugin.video_watch.any(url, fast_cfg), timeout=15
+                            self.plugin.video_watch.any(url, fast_cfg),
+                            timeout=min(15.0, budget),
                         )
                         if r.get("ok"):
                             cached = f"证据状态：{r.get('status', 'metadata_only')}\n{r.get('digest')}\n链接：{url}"
                     except Exception as exc:  # noqa: BLE001
                         logger.debug(f"[CommunityRadar] 轻量理解失败 {url}: {exc}")
                 if not cached:
-                    try:
-                        cached = await asyncio.wait_for(self._resolve(kind, url), timeout=7)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.debug(f"[CommunityRadar] 链接解析失败 {url}: {exc}")
-                        cached = f"{self._label(kind)} {url}"
+                    budget = deadline - time.monotonic()
+                    if budget >= MIN_LINK_SECONDS:
+                        try:
+                            cached = await asyncio.wait_for(
+                                self._resolve(kind, url), timeout=min(7.0, budget)
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug(f"[CommunityRadar] 链接解析失败 {url}: {exc}")
+                if not cached:
+                    cached = f"{self._label(kind)} {url}"
                 self._cache_set(url, cached)
             lines.append("- " + cached)
 

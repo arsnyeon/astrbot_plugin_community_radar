@@ -1,0 +1,25 @@
+# 统一换行符与文本处理，避免在不同系统上产生无意义的整文件差异。
+* text=auto
+
+*.py    text diff=python
+*.md    text diff=markdown
+*.json  text
+*.yaml  text
+*.yml   text
+*.sh    text eol=lf
+
+# 图片按二进制处理，不参与文本转换与差异计算。
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+
+# 发布包排除构建产物与本地数据，减小 zip 体积（插件市场限制 16MB）。
+__pycache__/  export-ignore
+*.py[cod]     export-ignore
+.gitignore    export-ignore
+.gitattributes export-ignore
+tests/        export-ignore
+data/         export-ignore

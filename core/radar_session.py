@@ -1,4 +1,4 @@
-"""Per-session record of what was actually shared, for follow-up questions."""
+"""按会话记录实际分享过的内容，用于回答后续追问。"""
 from __future__ import annotations
 
 import time

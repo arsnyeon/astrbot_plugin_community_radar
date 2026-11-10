@@ -1,4 +1,7 @@
-"""System browser discovery. Never use the user's normal browser profile."""
+"""探测系统已安装的浏览器。
+
+只返回可执行文件路径，不复制、不修改用户日常浏览器的配置目录。
+"""
 import os
 import shutil
 import subprocess

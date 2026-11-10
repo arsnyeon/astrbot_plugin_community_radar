@@ -14,7 +14,6 @@ import re
 import time
 import uuid
 from typing import Any, Optional
-from urllib.parse import urlencode
 
 import httpx
 
@@ -149,8 +148,6 @@ class HeyboxClient:
         signed: bool = True,
         workshop: bool = False,
     ) -> Any:
-        import re as _re
-
         if not path.startswith("/"):
             raise HeyboxError("path 必须以 / 开头", "input")
         if method != "GET" and not self.logged_in:
@@ -277,6 +274,37 @@ class HeyboxClient:
             })
         return out
 
+    def _images_of(self, link: dict) -> list[str]:
+        """从小黑盒帖子结构里取出图片地址。
+
+        列表接口用 ``imgs``，详情接口可能用 ``imgs``/``images``/``image_list``，
+        这里都尝试一遍，只保留 http(s) 地址。
+        """
+        out: list[str] = []
+        for key in ("imgs", "images", "image_list", "pics", "pic_list"):
+            value = link.get(key)
+            if isinstance(value, list):
+                for entry in value:
+                    url = entry if isinstance(entry, str) else (
+                        entry.get("url") if isinstance(entry, dict) else "")
+                    if isinstance(url, str) and url.startswith("http") and url not in out:
+                        out.append(url)
+        return out[:6]
+
+    @staticmethod
+    def _video_of(link: dict) -> str:
+        """取出帖子内嵌视频的直链；没有则返回空串。"""
+        for key in ("video_url", "video", "video_src", "play_url"):
+            value = link.get(key)
+            if isinstance(value, str) and value.startswith("http"):
+                return value
+            if isinstance(value, dict):
+                for nested in ("url", "play_url", "src", "video_url"):
+                    candidate = value.get(nested)
+                    if isinstance(candidate, str) and candidate.startswith("http"):
+                        return candidate
+        return ""
+
     async def detail(self, link_id: str, comment_limit: int = 6) -> dict:
         """帖子详情：标题、作者、点赞、正文、热评。"""
         d = await self.get("/bbs/app/link/tree", {
@@ -304,6 +332,8 @@ class HeyboxClient:
             "author": str(user.get("username") or user.get("nickname") or ""),
             "likes": int(link.get("link_like_count") or link.get("link_award_num") or 0),
             "body": _text_of(link.get("text")) or str(link.get("description") or ""),
+            "images": self._images_of(link),
+            "video": self._video_of(link),
             "topics": [
                 "#" + str(t.get("name") or "") + "#"
                 for t in (link.get("topics") or [])

@@ -1,7 +1,6 @@
 """Offline regression tests. Real module imports; network/model/platform calls are stubbed."""
 import asyncio
 import importlib
-import json
 import logging
 from pathlib import Path
 import sys
@@ -76,6 +75,7 @@ douyin = importlib.import_module("radar_test_plugin.services.douyin_duty")
 autopilot = importlib.import_module("radar_test_plugin.services.autopilot")
 services = importlib.import_module("radar_test_plugin.services.radar_services")
 main = importlib.import_module("radar_test_plugin.main")
+followup = importlib.import_module("radar_test_plugin.services.followup")
 peek = importlib.import_module("radar_test_plugin.media.link_peek")
 NS = types.SimpleNamespace
 
@@ -234,6 +234,7 @@ class AsyncTests(unittest.IsolatedAsyncioTestCase):
         watcher = self.plugin.video_watch
         loader = AsyncMock(return_value=evidence())
         result = await watcher._read(evidence()["content_id"], evidence()["url"], {}, loader)
+        self.assertFalse(result.get("from_cache"), "第一次读取不应来自缓存")
         cached = await watcher._read(evidence()["content_id"], evidence()["url"], {}, loader)
         self.assertTrue(cached["from_cache"])
         self.assertEqual(loader.await_count, 1)
@@ -337,7 +338,8 @@ class AsyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_full_plugin_construct_and_shutdown(self):
         with patch.object(bili_duty.BiliDuty, "_data_dir", return_value=self.path), \
              patch.object(main.DouyinBrowser, "_default_data_dir", return_value=str(self.path)), \
-             patch.object(main.TopicWatch, "_data_dir", return_value=self.path):
+             patch.object(main.TopicWatch, "_data_dir", return_value=self.path), \
+             patch.object(main, "data_dir", return_value=self.path):
             plugin = main.CommunityRadarPlugin(NS(), {})
         self.assertIsNone(plugin.duty._task)
         await plugin.initialize()
@@ -427,6 +429,88 @@ class PureTests(unittest.TestCase):
         self.assertTrue(req.extra_user_content_parts[0]._no_save)
         main.CommunityRadarPlugin._append_temp(req, "per-turn hint")
         self.assertEqual(len(req.extra_user_content_parts), 1)
+
+class FollowUpGuardTests(unittest.IsolatedAsyncioTestCase):
+    """群里接话必须避开默认 LLM 已经处理的情况，否则会重复说话。"""
+
+    def setUp(self):
+        self.sent = []
+        kv: dict = {}
+
+        async def send(target, chain):
+            self.sent.append((target, chain))
+            return True
+
+        class FakePlugin(main.HooksMixin):
+            """只装配接话用到的那几个属性，避免拉起整个插件。"""
+
+            def __init__(self):
+                self.config = {"share": {"followup_groups": True, "followup_replies": 2,
+                                         "followup_chance": 1.0}}
+                self.radar_store = NS(get=lambda k, d=None: kv.get(k, d),
+                                      set=lambda k, v: kv.__setitem__(k, v))
+                self.context = NS(send_message=send)
+                self.duty = NS(_bot_persona=AsyncMock(return_value=""))
+                self.radar_ai = NS(ask=AsyncMock(return_value='{"say":"我也在玩这个"}'))
+
+            def _recent_share(self, umo):
+                return {"items": [{"title": "《银松镇》正式版攻略", "url": "u",
+                                   "digest": "恐怖游戏"}]}
+
+        self.plugin = FakePlugin()
+
+    def event(self, **overrides):
+        base = dict(unified_msg_origin="g:GroupMessage:1", message_str="银松镇我也在玩",
+                    is_at_or_wake_command=False, call_llm=False,
+                    get_sender_id=lambda: "1001", get_self_id=lambda: "999")
+        base.update(overrides)
+        return NS(**base)
+
+    async def test_private_chat_is_left_to_default_llm(self):
+        await self.plugin._maybe_followup(self.event(
+            unified_msg_origin="x:FriendMessage:1"))
+        self.assertEqual(self.sent, [])
+
+    async def test_woken_message_is_left_to_default_llm(self):
+        await self.plugin._maybe_followup(self.event(is_at_or_wake_command=True))
+        self.assertEqual(self.sent, [])
+
+    async def test_own_message_is_ignored(self):
+        await self.plugin._maybe_followup(self.event(
+            get_sender_id=lambda: "999", get_self_id=lambda: "999"))
+        self.assertEqual(self.sent, [])
+
+    async def test_unrelated_chatter_is_ignored(self):
+        await self.plugin._maybe_followup(self.event(message_str="今天中午吃什么"))
+        self.assertEqual(self.sent, [])
+
+    async def test_relevant_group_reply_is_sent(self):
+        await self.plugin._maybe_followup(self.event())
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.sent[0][0], "g:GroupMessage:1")
+
+    async def test_second_reply_blocked_by_gap(self):
+        await self.plugin._maybe_followup(self.event())
+        await self.plugin._maybe_followup(self.event())
+        self.assertEqual(len(self.sent), 1, "连发两条会像刷屏，应被间隔拦住")
+
+    async def test_limit_respected_after_gap_would_allow(self):
+        state = followup.FollowUpState(self.plugin.radar_store)
+        state.mark("g:GroupMessage:1", now=0)
+        state.mark("g:GroupMessage:1", now=0)
+        await self.plugin._maybe_followup(self.event())
+        self.assertEqual(len(self.sent), 0, "超过上限后即使间隔够了也不该再接")
+
+    async def test_model_skip_stays_silent(self):
+        self.plugin.radar_ai.ask.return_value = '{"skip":true}'
+        await self.plugin._maybe_followup(self.event())
+        self.assertEqual(self.sent, [])
+
+    async def test_disabled_by_config(self):
+        self.plugin.config["share"]["followup_groups"] = False
+        await self.plugin._maybe_followup(self.event())
+        self.assertEqual(self.sent, [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

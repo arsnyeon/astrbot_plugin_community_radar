@@ -24,10 +24,12 @@ class CacheTests(unittest.TestCase):
     def test_limits_and_traversal(self):
         self.assertIsNone(self.cache.put(b'x' * 21))
         self.assertIsNone(self.cache.read('../../secret'))
-        a = self.cache.put(b'a' * 12)
+        first = self.cache.put(b'a' * 12)
         b = self.cache.put(b'b' * 12)
         self.assertLessEqual(sum(p.stat().st_size for p in self.cache.root.glob('*.img')), 20)
         self.assertIsNotNone(self.cache.read(b['media_id']))
+        # 超出总量上限后，最早的一批应当已被清理。
+        self.assertIn(self.cache.read(first['media_id']), (None, first))
 
     def test_expired_not_returned(self):
         a = self.cache.put(b'abc')

@@ -1,4 +1,7 @@
-"""Platform-neutral contracts. Capabilities are declared, never assumed."""
+"""与平台无关的通用契约。
+
+能力必须显式声明，不存在的能力不会被假设为可用。
+"""
 from dataclasses import dataclass, field
 from typing import Protocol
 

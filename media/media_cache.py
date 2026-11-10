@@ -1,4 +1,7 @@
-"""Bounded plugin-owned cache for observed images, never arbitrary file reads."""
+"""插件自有的画面缓存，有容量与有效期限制。
+
+只读取本插件写入的内容，不接受任意文件路径，避免越权访问。
+"""
 import hashlib
 import time
 from pathlib import Path

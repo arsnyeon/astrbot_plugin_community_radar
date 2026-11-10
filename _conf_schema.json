@@ -2,20 +2,22 @@
   "admin_uin": {
     "type": "string",
     "description": "主人账号",
-    "hint": "定时推送与互动操作的默认对象。建议填写你的 QQ 号；留空且未填「推送目标」时不会主动推送。",
+    "hint": "定时推送与互动操作的默认对象。留空会自动使用 AstrBot「管理员」(admins_id) 里的第一个账号，无需重复填写；也可以用逗号或空格填写多个账号。",
     "default": ""
   },
   "bili_cookie": {
-    "type": "text",
+    "type": "string",
     "description": "B 站 Cookie",
     "hint": "仅浏览、搜索、看评论时不需要填写。需要发评论或点赞时，粘贴包含 SESSDATA 与 bili_jct 的完整 Cookie。",
-    "default": ""
+    "default": "",
+    "secret": true
   },
   "heybox_cookie": {
-    "type": "text",
+    "type": "string",
     "description": "小黑盒 Cookie",
     "hint": "仅浏览信息流与搜索时不需要填写。需要评论、点赞或发帖时，粘贴包含 pkey 与 x_xhh_tokenid 的完整 Cookie。",
-    "default": ""
+    "default": "",
+    "secret": true
   },
   "browse": {
     "type": "object",
@@ -48,8 +50,15 @@
       "platforms": {
         "type": "string",
         "description": "浏览哪些社区",
-        "hint": "all允许自主挑选三平台之一，both允许B站或小黑盒，亦可指定单平台。",
+        "hint": "all = 在已启用的平台里自主挑选；both = 只在 B 站与小黑盒之间挑；也可以填单平台：bili / heybox / tieba / douyin。",
+        "options": ["all", "both", "bili", "heybox", "tieba", "douyin"],
         "default": "all"
+      },
+      "cross_check": {
+        "type": "bool",
+        "description": "刷到有意思的会去别处搜一下",
+        "hint": "开启后，某条内容它特别有感觉时，会顺手去贴吧等地搜一下相关讨论并带进聊天。每轮最多查一次，查不到就算了。",
+        "default": true
       },
       "interests_mode": {
         "type": "string",
@@ -112,17 +121,29 @@
         "hint": "开启后，她发出来的那条会附上内容封面（B 站封面 / 小黑盒配图），不只是干巴巴的链接。配图取不到或发送失败会自动退回纯文字。",
         "default": true
       },
-      "deep_read_when_topic": {
-        "type": "bool",
-        "description": "跟话题时多看几条",
-        "hint": "如果这轮是因为聊天里提到才去搜的，会多补几条正文与热评，聊得更准；关掉则和随便逛一样只补 2 条。",
-        "default": true
-      },
-      "enrich_max": {
+      "watch_per_run": {
         "type": "int",
-        "description": "最多补几条正文",
-        "hint": "单次浏览最多给多少条内容补正文 / 热评分。补得越多越准，也越慢。",
-        "default": 5
+        "description": "一轮最多认真看几条",
+        "hint": "1～8，默认 3。不是硬指标：看到没意思或觉得够了会提前收手，不会为了凑数刷完。",
+        "default": 3
+      },
+      "pause_min_seconds": {
+        "type": "int",
+        "description": "两条内容之间最少停几秒",
+        "hint": "像人一样，看完一条不会立刻点下一条。默认 20 秒。",
+        "default": 20
+      },
+      "pause_max_seconds": {
+        "type": "int",
+        "description": "两条内容之间最多停几秒",
+        "hint": "实际停顿在这个区间里随机，默认 20～90 秒。",
+        "default": 90
+      },
+      "boredom_chance": {
+        "type": "float",
+        "description": "看完一条就想收手的概率",
+        "hint": "0～1，默认 0.12。模拟状态起伏：有时候刷两条就够了。设成 0 则每轮都会看满上限。",
+        "default": 0.12
       },
       "platform_weights": {
         "type": "object",
@@ -137,6 +158,11 @@
           "heybox": {
             "type": "int",
             "description": "小黑盒权重",
+            "default": 3
+          },
+          "tieba": {
+            "type": "int",
+            "description": "贴吧权重",
             "default": 3
           },
           "douyin": {
@@ -173,6 +199,12 @@
       "enable": {
         "type": "bool",
         "description": "启用话题监听",
+        "default": true
+      },
+      "watchlist": {
+        "type": "bool",
+        "description": "记住聊天里提到的具体内容",
+        "hint": "开启后，别人发的链接、提到的作品名，只要她自己感兴趣就会进「想刷列表」，下次浏览优先去看。只记她感兴趣的，不感兴趣的不会进。",
         "default": true
       },
       "min_chars": {
@@ -244,6 +276,25 @@
       }
     }
   },
+  "tieba": {
+    "type": "object",
+    "description": "百度贴吧",
+    "hint": "贴吧匿名即可读吧内主题与搜索结果，但楼层回复需要登录，因此只作为摘要级来源。",
+    "items": {
+      "enable": {
+        "type": "bool",
+        "description": "启用贴吧浏览",
+        "hint": "开启后会从下面配置的吧里挑帖子；没有配置吧时只按关键词搜索。",
+        "default": false
+      },
+      "forums": {
+        "type": "list",
+        "description": "要逛的吧",
+        "hint": "填吧名，不带「吧」字，例如：独立游戏、天堂鸡汤。建议 1~3 个，太多会分散。",
+        "default": []
+      }
+    }
+  },
   "link_peek": {
     "type": "object",
     "description": "分享链接接话",
@@ -285,6 +336,13 @@
         "description": "启用推荐流与互动",
         "hint": "关闭时热榜与链接接话仍可用；开启后可刷推荐流、点赞、评论、分享。首次使用需安装浏览器运行时并扫码登录。",
         "default": false
+      },
+      "cookie": {
+        "type": "string",
+        "description": "抖音 Cookie",
+        "hint": "登录后从浏览器复制，含 sessionid 等字段；也可以用 /雷达填cookie douyin <内容> 让插件自己写。",
+        "default": "",
+        "secret": true
       },
       "dry_run": {
         "type": "bool",
@@ -443,12 +501,6 @@
         "description": "主人的 B 站号（UID）",
         "hint": "B 站私信分享用。是纯数字 UID（点开个人主页，网址 space.bilibili.com/ 后面那串），不是 QQ 号也不是昵称。留空则不走 B 站私信。",
         "default": ""
-      },
-      "share_to": {
-        "type": "string",
-        "description": "分享渠道",
-        "hint": "qq = 只发聊天平台，bili = 只发 B 站私信，both = 两边都发。B 站私信需要登录态 + 主人的 B 站号。",
-        "default": "qq"
       }
     }
   },
@@ -468,6 +520,12 @@
         "hint": "避免短时间连着发，默认 10 分钟。",
         "default": 600
       },
+      "dry_run": {
+        "type": "bool",
+        "description": "分享试运行",
+        "hint": "开启后照常挑内容、生成文案，但不真的发出去，只把这一轮准备发的内容记在 /社区雷达 状态 里。建议先在群里观察一轮再关掉。",
+        "default": false
+      },
       "max_per_day": {
         "type": "int",
         "description": "每天最多分享几条",
@@ -482,14 +540,14 @@
       "max_images": {
         "type": "int",
         "description": "一次分享最多几张实际画面",
-        "hint": "0关闭实际画面选图，默认3、最多6。模型只从已取得的画面选择，不必凑数；需要支持图片输入的模型，额外一次选图调用最多20秒。缓存过期时不重新下载。",
-        "default": 3
+        "hint": "0 关闭画面选图，最多 6，默认 5。模型只挑自己觉得有意思、有信息量的画面，通常 3~6 张；多张会分散到不同消息，不会堆在一条。",
+        "default": 5
       },
       "segment_max": {
         "type": "int",
         "description": "最多分几条",
-        "hint": "建议 2~4 条；拆得太多会像刷屏。",
-        "default": 3
+        "hint": "1～8。概括、评论区、自己的看法可以分开发，不必凑数；拆得太多会像刷屏，建议 4~6 条。",
+        "default": 6
       },
       "segment_delay": {
         "type": "float",
@@ -500,14 +558,33 @@
       "style": {
         "type": "string",
         "description": "分享方式",
-        "hint": "forward = 像转发一样，一句反应 + 原链接；summary = 多聊几句内容再给链接。",
-        "default": "forward"
+        "hint": "chat = 像聊天一样分几条说，有自己的反应和展开（默认）；forward = 更像随手转发，一句反应加原链接。",
+        "options": ["chat", "forward"],
+        "default": "chat"
       },
       "auto_followup": {
         "type": "bool",
         "description": "分享后自动带上摘要",
         "hint": "分享后的短时间内，同一会话的追问会自动带上标题、链接和摘要，不必等模型自己想起来查记忆。",
         "default": true
+      },
+      "followup_groups": {
+        "type": "bool",
+        "description": "群里有人接话时自己回一句",
+        "hint": "群里别人接着聊她分享的东西、又没 @ 她时，默认链路不会回；开启后她会自己挑着接一句。只在最近分享过的窗口内、最多接 2 次。",
+        "default": true
+      },
+      "followup_replies": {
+        "type": "int",
+        "description": "同一轮分享最多接几次话",
+        "hint": "默认 2。避免她一个人把话题刷满。",
+        "default": 2
+      },
+      "followup_chance": {
+        "type": "float",
+        "description": "接话的概率",
+        "hint": "0~1，默认 0.6。不是每条都接，留点「看到但没吭声」的余地。",
+        "default": 0.6
       },
       "followup_minutes": {
         "type": "int",
@@ -546,9 +623,21 @@
       },
       "frames": {
         "type": "int",
-        "description": "关键帧数量",
+        "description": "关键帧数量上限",
         "default": 6,
-        "hint": "1～12，覆盖开头、中间和结尾；字幕与画面一起使用。"
+        "hint": "1～12，实际按视频时长自动决定：短视频少抽、长视频多抽，保证覆盖开头、中间和结尾；字幕与画面一起使用。"
+      },
+      "read_comments": {
+        "type": "bool",
+        "description": "看完后翻一下评论区",
+        "hint": "像人一样，看完内容顺手看看大家在说什么。评论只作为参考证据，不会当成她自己的观点；翻不到就跳过，不影响这一条。",
+        "default": true
+      },
+      "comment_samples": {
+        "type": "int",
+        "description": "每条内容看几条评论",
+        "default": 8,
+        "hint": "0～20。取热评为主，会参与感想与分享的措辞。"
       },
       "provider_id": {
         "type": "string",
@@ -586,11 +675,25 @@
   "learning": {
     "type": "object",
     "description": "观看记忆与兴趣",
+    "hint": "看过的内容会沉淀成长期知识（含梗与术语），不会随观看记录压缩而消失。",
     "items": {
       "enable": {
         "type": "bool",
         "description": "从可靠内容生成感想和偏好",
         "default": true
+      },
+      "recall_in_chat": {
+        "type": "bool",
+        "description": "聊天时自动想起学过的内容",
+        "hint": "话题命中已积累的知识时，把它带进本轮上下文。只注入命中的少数几条，不对就由模型忽略。",
+        "default": true
+      },
+      "kb_name": {
+        "type": "string",
+        "description": "同步到哪个知识库",
+        "hint": "选一个 AstrBot 知识库，会把学到的内容汇总成一份文档放进去，普通聊天即可通过检索用到。留空则不同步。需要该知识库已配置嵌入模型。",
+        "default": "",
+        "_special": "select_knowledgebase"
       },
       "ai_provider_id": {
         "type": "string",

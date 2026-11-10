@@ -14,16 +14,16 @@ from __future__ import annotations
 import json
 import random
 import re
-import time
 from typing import Any
 
-from astrbot.api import logger
+from ..core.owners import owner_umo as resolve_owner_umo
 
-PLATFORMS = ("bili", "heybox", "douyin")
+PLATFORMS = ("bili", "heybox", "tieba", "douyin")
 
 PLATFORM_LABEL = {
     "bili": "B 站",
     "heybox": "小黑盒",
+    "tieba": "百度贴吧",
     "douyin": "抖音",
 }
 
@@ -70,20 +70,29 @@ class Autopilot:
 
     # ── 平台选择 ────────────────────────────────────────────────
 
-    @staticmethod
-    def _enabled_platforms(cfg: dict) -> list[str]:
-        """按 platforms 配置 + 能力可用性，算出这次能碰的平台。"""
+    def _enabled_platforms(self, cfg: dict) -> list[str]:
+        """按 platforms 配置 + 平台自身开关，算出这次能碰的平台。"""
         raw = str(cfg.get("platforms") or "all").lower()
         if raw == "bili":
             want = ["bili"]
         elif raw == "heybox":
             want = ["heybox"]
+        elif raw == "tieba":
+            want = ["tieba"]
         elif raw == "douyin":
             want = ["douyin"]
         elif raw == "both":
             want = ["bili", "heybox"]
         else:
             want = list(PLATFORMS)
+        # 抖音依赖浏览器写层；没启用时不要把它选成本轮重点，否则整轮白跑。
+        douyin_cfg = (getattr(self.plugin, "config", {}) or {}).get("douyin") or {}
+        if not douyin_cfg.get("enabled"):
+            want = [p for p in want if p != "douyin"]
+        # 贴吧没有配置任何吧、也没有可搜索词时不参与挑选。
+        tieba_cfg = (getattr(self.plugin, "config", {}) or {}).get("tieba") or {}
+        if not tieba_cfg.get("enable", False):
+            want = [p for p in want if p != "tieba"]
         return want
 
     def plan(self, cfg: dict, *, topics: list[dict] | None = None) -> dict:
@@ -119,8 +128,6 @@ class Autopilot:
             if len(keywords) >= 3:
                 break
 
-        # 话题里有货，说明她此刻是真想去看那件事
-        deep = bool(keywords) and bool(cfg.get("deep_read_when_topic", True))
         reason = f"跟话题「{keywords[0]}」" if keywords else "随便逛逛"
 
         # 没有话题时，按权重随机偏重一个平台，避免每次都是同一套
@@ -144,17 +151,8 @@ class Autopilot:
             "platforms": platforms,
             "focus": focus,
             "keywords": keywords,
-            "deep": deep,
             "reason": reason,
         }
-
-    # ── 深度浏览：补内容 ────────────────────────────────────────
-
-    def enrich_limit(self, cfg: dict, plan: dict, total: int) -> int:
-        """这轮补几条正文/评论。"""
-        base = 3 if plan.get("deep") else 2
-        cap = max(1, int(cfg.get("enrich_max") or 5))
-        return max(1, min(base, cap, max(1, total)))
 
     # ── 配图 ────────────────────────────────────────────────────
 
@@ -197,14 +195,14 @@ class Autopilot:
             return fixed
 
         out: list[str] = []
-        owner = str(self.plugin.config.get("admin_uin") or "").strip()
-        plat = ""
         try:
             plat = self.plugin._platform_name()
         except Exception:  # noqa: BLE001
             plat = "default"
-        if owner:
-            out.append(f"{plat}:FriendMessage:{owner}")
+        # 主人私聊目标统一解析：填了 admin_uin 用它，留空则用 AstrBot 全局管理员。
+        owner_umo = resolve_owner_umo(self.plugin)
+        if owner_umo:
+            out.append(owner_umo)
 
         group_cfg = group_cfg or {}
         if group_cfg.get("enable", True):
@@ -230,15 +228,3 @@ class Autopilot:
         except Exception:  # noqa: BLE001
             p = 0.35
         return random.random() < max(0.0, min(p, 1.0))
-
-    # ── 深夜 / 精力 ─────────────────────────────────────────────
-
-    @staticmethod
-    def night_factor() -> float:
-        """夜里更容易懒，用它压低主动分享意愿。"""
-        h = time.localtime().tm_hour
-        if 1 <= h < 7:
-            return 0.6
-        if h >= 23 or h < 1:
-            return 0.8
-        return 1.0

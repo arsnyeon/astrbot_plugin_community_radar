@@ -1,4 +1,4 @@
-"""Optional schedules, episodic viewing, inbox replies and platform actions."""
+"""可选定时任务：日程安排、番剧观看、通知私信回复与平台扩展操作。"""
 from __future__ import annotations
 import asyncio
 import datetime as dt
@@ -53,11 +53,15 @@ class RadarServices:
             await self.daily_plan()
         if cfg.get("weekly_push", False) and dt.datetime.now().weekday() == 6:
             week = dt.date.today().strftime("%G-W%V")
-            if dt.datetime.now().hour >= 18 and self.store.get("weekly_sent") != week:
+            if (dt.datetime.now().hour >= 18 and self.store.get("weekly_sent") != week
+                    and time.time() >= float(self.store.get("weekly_retry_at") or 0)):
                 text = await self.p.cognition.weekly()
-                sent = await self.p.duty._send(text, self.p.config.get("browse") or {})
+                sent = bool(text) and await self.p.duty._send(text, self.p.config.get("browse") or {})
                 if sent:
                     self.store.set("weekly_sent", week)
+                else:
+                    # 额度/冷却挡住时不要每分钟重新调一次模型，半小时后再试。
+                    self.store.set("weekly_retry_at", time.time() + 1800)
         inbox = self.p.config.get("inbox") or {}
         if inbox.get("enable", False) and time.time() >= self._next_inbox:
             self._next_inbox = time.time() + number(inbox, "poll_seconds", 300, 60, 3600)

@@ -13,9 +13,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import datetime
-import json
 import random
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -23,7 +21,11 @@ from typing import Any
 from astrbot.api import logger
 
 from ..clients.bili import BiliError, WriteUnknown
+from ..core.paths import data_dir
+from ..core.statefile import read_json, write_json
 from ..core.radar_core import number, verified, parse_json
+from ..media.comments import collect as collect_comments, digest_of
+from ..media.comments import render as render_comments
 
 
 def _day() -> str:
@@ -43,38 +45,24 @@ class BiliDuty:
 
     @staticmethod
     def _data_dir() -> Path:
-        try:
-            from astrbot.api.star import StarTools
-
-            return Path(StarTools.get_data_dir("astrbot_plugin_community_radar"))
-        except Exception:  # noqa: BLE001
-            return Path("/AstrBot/data/plugin_data/astrbot_plugin_community_radar")
+        return data_dir()
 
     def _empty(self) -> dict:
         return {"day": _day(), "watched": 0, "like": 0, "comment": 0,
                 "writes": 0, "last_write_at": 0.0, "records": []}
 
     def _load(self) -> dict:
-        try:
-            data = json.loads(self._state_file.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                return self._empty()
-            if data.get("day") != _day():
-                return self._empty()
-            base = self._empty()
-            base.update(data)
-            return base
-        except Exception:  # noqa: BLE001
+        data, _ = read_json(self._state_file, {})
+        if not isinstance(data, dict):
             return self._empty()
+        if data.get("day") != _day():
+            return self._empty()
+        base = self._empty()
+        base.update(data)
+        return base
 
     def _save(self) -> None:
-        try:
-            self._state_file.parent.mkdir(parents=True, exist_ok=True)
-            self._state_file.write_text(
-                json.dumps(self.s, ensure_ascii=False, indent=1), encoding="utf-8"
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[CommunityRadar] B 站状态写入失败: {exc}")
+        write_json(self._state_file, self.s, indent=1)
 
     def _caps(self):
         if self.s.get("day") != _day():
@@ -90,12 +78,18 @@ class BiliDuty:
         return max(0, self._caps().get(kind, 0) - int(self.s.get(kind) or 0))
 
     def _blocked(self, kind: str) -> str:
+        why = ""
         if self._left(kind) <= 0:
-            return f"今天的{kind}额度用完了"
-        gap = int(self.cfg.get("min_write_gap_sec") or 120)
-        if time.time() - float(self.s.get("last_write_at") or 0) < gap:
-            return "刚操作过，缓一缓"
-        return ""
+            why = f"今天的{kind}额度用完了"
+        else:
+            gap = int(self.cfg.get("min_write_gap_sec") or 120)
+            if time.time() - float(self.s.get("last_write_at") or 0) < gap:
+                why = "刚操作过，缓一缓"
+        # /b站状态 的「上次没动手」要从这里留下原因，否则永远为空。
+        if why and self.s.get("last_skip_reason") != why:
+            self.s["last_skip_reason"] = why
+            self._save()
+        return why
 
     def _record(self, kind: str, **kw) -> None:
         self.s.setdefault("records", [])
@@ -127,23 +121,28 @@ class BiliDuty:
                 item["_link"] = f"https://www.bilibili.com/video/{item['bvid']}"
             selected = await self.plugin.cognition.choose(items, self.plugin.config.get("browse") or {})
             understood = []
+            # 依次看完，翻完评论区，再一起回味；不边看边点评。
             for item in selected:
                 result = await self.plugin.video_watch.bili(item["_link"], self.plugin.config.get("video") or {})
                 if not verified(result):
                     continue
                 item["_body"] = result["digest"]
                 item["_evidence"] = result
-                item["_review"] = await self.plugin.cognition.review(result)
-                try:
-                    info = await self.plugin.bili.view(item["bvid"])
-                    cs = await self.plugin.bili.comments(str(info["aid"]), limit=5)
-                except Exception:
-                    cs = []
-                item["_comments"] = [str(c.get("text") or "") for c in cs]
-                item["_cids"] = [str(c.get("rpid") or "") for c in cs]
+                comments = await collect_comments(self.plugin, result, 8)
+                # 保存结构化评论，展示文本在使用处渲染，避免同一字段两种形态。
+                item["_comments"] = comments
+                item["_cids"] = [str(c.get("id") or "") for c in comments]
+                if comments:
+                    result["comments"] = comments
+                    hint = digest_of(comments)
+                    result["digest"] = str(result.get("digest") or "") + "\n评论区：\n" + hint
+                    item["_body"] = result["digest"]
                 understood.append(item)
                 if not result.get("from_cache"):
                     self.s["watched"] = int(self.s.get("watched") or 0) + 1
+            for item in understood:
+                item["_review"] = await self.plugin.cognition.review(
+                    item["_evidence"], comments=item["_evidence"].get("comments") or [])
             plan = await self._decide(understood) if understood else []
             done = []
             for action in plan:
@@ -169,24 +168,6 @@ class BiliDuty:
             return {"ok": True, "message": "；".join(done) if owner_asked else "",
                     "watched": len(understood)}
 
-    async def _deep_watch(self, item: dict) -> str:
-        """真看一遍：字幕优先，没字幕就抽帧描述画面。"""
-        vw = getattr(self.plugin, "video_watch", None)
-        cfg = self.plugin.config.get("video") or {}
-        if vw is None or not cfg.get("enable", True):
-            return ""
-        bvid = str(item.get("bvid") or "")
-        if not bvid:
-            return ""
-        try:
-            r = await vw.bili(f"https://www.bilibili.com/video/{bvid}", cfg)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[CommunityRadar] B 站深看失败: {exc}")
-            return ""
-        if not r.get("ok"):
-            return ""
-        return f"{r.get('via')}：{str(r.get('digest') or '')[:120]}"
-
     async def _decide(self, items: list[dict]) -> list[dict]:
         """让模型挑 1~2 条它真想互动的，并给评论草稿。"""
         persona = ""
@@ -197,10 +178,10 @@ class BiliDuty:
         lines = []
         for x in items[:10]:
             line = f"- {x.get('bvid')} 《{x.get('title')}》\n实际内容证据：{str(x.get('_body') or '')[:4500]}"
-            cs = x.get("_comments") or []
+            cs = render_comments(x.get("_comments"), 5)
             if cs:
                 line += "\n  评论：" + " / ".join(
-                    f"[{j + 1}] {t}" for j, t in enumerate(cs[:5])
+                    f"[{j + 1}] {t}" for j, t in enumerate(cs)
                 )
             lines.append(line)
         prompt = (

@@ -25,6 +25,10 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..core.paths import data_dir
+from ..core.radar_core import AUX_AI_TIMEOUT
+from ..core.statefile import read_json, write_json
+
 # 这些开头基本都是指令，没必要当话题
 _CMD_PREFIX = ("/", "／", "!", "！", "#", "＃")
 
@@ -93,30 +97,16 @@ class TopicWatch:
 
     @staticmethod
     def _data_dir() -> Path:
-        try:
-            from astrbot.api.star import StarTools
-
-            return Path(StarTools.get_data_dir("astrbot_plugin_community_radar"))
-        except Exception:  # noqa: BLE001
-            return Path("/AstrBot/data/plugin_data/astrbot_plugin_community_radar")
+        return data_dir()
 
     # ── 队列持久化 ──────────────────────────────────────────────
 
     def _load(self) -> list[dict]:
-        try:
-            data = json.loads(self._file.read_text(encoding="utf-8"))
-            return data if isinstance(data, list) else []
-        except Exception:  # noqa: BLE001
-            return []
+        data, _ = read_json(self._file, [])
+        return data if isinstance(data, list) else []
 
     def _save(self, items: list[dict]) -> None:
-        try:
-            self._file.parent.mkdir(parents=True, exist_ok=True)
-            self._file.write_text(
-                json.dumps(items[:80], ensure_ascii=False, indent=1), encoding="utf-8"
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[CommunityRadar] 话题队列写入失败: {exc}")
+        write_json(self._file, items[:80], indent=1)
 
     def queue(self, limit: int = 8) -> list[dict]:
         """取还没过期的待搜话题，最新的在前。"""
@@ -250,17 +240,28 @@ class TopicWatch:
             "- 只挑你真的感兴趣、且有明确可搜对象的（作品名、游戏、硬件、赛事、事件、梗都行）\n"
             "- 拿不准、只是寒暄、或者搜了也没内容的，就不要\n"
             "- 最多 2 条，宁缺毋滥\n"
-            '只输出 JSON 数组，元素形如 {"keyword":"要搜的词","why":"一句话说明你为什么想看","platform":"bili|heybox|douyin|any"}\n'
+            '只输出 JSON 数组，元素形如 {"keyword":"要搜的词","why":"一句话说明你为什么想看",'
+            '"platform":"bili|heybox|douyin|tieba|any","title":"具体作品名，没有就留空"}\n'
+            "title 填的是聊天里提到的那个具体东西的名字（视频、游戏、番、帖子都算），"
+            "哪怕是口头说的、没有链接；只是泛泛而谈就留空。\n"
             "没有就输出 []，不要任何解释。"
         )
         try:
-            resp = await provider.text_chat(
-                prompt=prompt,
-                session_id=umo,
-                contexts=[],
-                system_prompt="你只输出 JSON 数组，不输出其他任何文字。",
+            # 必须带超时：这段跑在自动浏览的开头，模型卡住会把整轮拖死，
+            # 而且调用方只能等到 10 分钟的外层预算到期。
+            resp = await asyncio.wait_for(
+                provider.text_chat(
+                    prompt=prompt,
+                    session_id=umo,
+                    contexts=[],
+                    system_prompt="你只输出 JSON 数组，不输出其他任何文字。",
+                ),
+                timeout=AUX_AI_TIMEOUT,
             )
             raw = getattr(resp, "completion_text", "") or ""
+        except asyncio.TimeoutError:
+            logger.info("[CommunityRadar] 话题判断超时，这批先留着下次再判断")
+            return
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"[CommunityRadar] 话题判断失败: {exc}")
             return
@@ -274,6 +275,15 @@ class TopicWatch:
                     f"[CommunityRadar] 记下一个想去看的话题：{entry['keyword']}"
                     f"（{entry.get('platform') or 'any'}）"
                 )
+            # 如果聊天里说的是某个具体作品（哪怕没链接），也放进「想刷列表」。
+            title = str(entry.get("title") or "").strip()
+            board = getattr(self.plugin, "watchlist", None)
+            if title and board is not None:
+                try:
+                    board.add("", platform=entry.get("platform") or "", title=title,
+                              source="chat", from_user=umo[-12:])
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(f"[CommunityRadar] 想刷列表写入失败: {exc}")
 
     @staticmethod
     def _parse(raw: str) -> list[dict]:
@@ -295,12 +305,13 @@ class TopicWatch:
             if not kw:
                 continue
             plat = str(x.get("platform") or "any").strip().lower()
-            if plat not in ("bili", "heybox", "douyin", "any"):
+            if plat not in ("bili", "heybox", "douyin", "tieba", "any"):
                 plat = "any"
             out.append({
                 "keyword": kw,
                 "why": str(x.get("why") or "").strip()[:120],
                 "platform": plat,
+                "title": str(x.get("title") or "").strip()[:60],
             })
         return out[:2]
 

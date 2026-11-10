@@ -1,5 +1,11 @@
-httpx
-Pillow
-# playwright 是「抖音写层」的可选依赖，由 install_browser.sh 单独安装：
-# 它只用于 connect_over_cdp，且装进容器全局环境，写进 requirements.txt
-# 会让只想要热榜功能的人也被迫安装。读层（douyin_feed.py）不依赖它。
+# 运行时必需依赖。
+# 版本下限对应本项目实际使用到的接口，避免旧版本缺少 AsyncClient.is_closed、
+# Image.LANCZOS 等属性。
+httpx>=0.27
+Pillow>=10.0
+# 扫码登录要把登录链接渲染成二维码发给主人；纯 Python 实现，复用 Pillow。
+qrcode>=7.4
+
+# playwright 是「抖音写层」的可选依赖，由 scripts/install_browser.sh 单独安装：
+# 它只用于 connect_over_cdp，且装进容器全局环境；写进本文件会让只想要热榜
+# 功能的用户也被迫安装。读层（clients/douyin_feed.py）不依赖它。
