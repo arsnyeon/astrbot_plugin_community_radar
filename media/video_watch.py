@@ -187,13 +187,25 @@ class VideoWatch:
             except Exception:
                 pass
             duration = float(info.get("duration") or 0)
-            # 先走官方快照拼版：覆盖全片、不下载视频、不依赖 ffmpeg。
-            # 只有它不可用时才回退到 ffmpeg 抽帧。
-            frames = []
-            if cfg.get("use_frames", True):
+
+            # 画面来源。默认走 ffmpeg 抽真帧：官方快照拼版给的是小缩略图，
+            # 放大后很糊，只适合当 ffmpeg 不可用时的后备。
+            want_frames = bool(cfg.get("use_frames", True))
+            mode = str(cfg.get("frame_source") or "ffmpeg").lower()
+            frames: list[tuple[int, str]] = []
+            sources: dict = {}
+            use_ffmpeg = want_frames and mode != "storyboard" and shutil.which("ffmpeg") is not None
+            if use_ffmpeg:
+                try:
+                    sources = await self.plugin.bili.play_sources(
+                        bvid, cid, str(info.get("aid") or ""))
+                except Exception:
+                    sources = {}
+                # 拿不到直链就没法抽帧，退回快照。
+                use_ffmpeg = bool(sources.get("video"))
+            if want_frames and not use_ffmpeg:
                 frames = await self._bili_storyboard(bvid, cid, duration, transcript, cfg)
-            sources = {}
-            if (not frames and cfg.get("use_frames", True)) or cfg.get("audio_transcription", False):
+            if cfg.get("audio_transcription", False) and not sources:
                 try:
                     sources = await self.plugin.bili.play_sources(
                         bvid, cid, str(info.get("aid") or ""))
@@ -231,7 +243,7 @@ class VideoWatch:
             return []
         cropped = await storyboard.crop(
             self.plugin.bili, board, times,
-            width=int(number(cfg, "frame_width", 640, 0, 1280)),
+            width=int(number(cfg, "frame_width", 854, 0, 1280)),
         )
         files = []
         for seconds, data in cropped:
@@ -380,7 +392,8 @@ class VideoWatch:
                     async with self._media_slots:
                         pairs = await self._extract(sources["video"], duration,
                                                     frame_budget(duration, number(cfg, "frames", 6, 1, 12)),
-                                                    referer, start, end)
+                                                    referer, start, end,
+                                                    int(number(cfg, "frame_width", 854, 480, 1280)))
             except MediaToolMissing:
                 uncertainty.append("未找到 ffmpeg，无法抽帧（装上 ffmpeg 才能看画面）")
             except (TimeoutError, OSError):
@@ -472,7 +485,7 @@ class VideoWatch:
             return summary or combined[:cap//2] + "\n（中间摘要省略）\n" + combined[-cap//2:]
         return combined
 
-    async def _extract(self, url, duration, count, referer="", start=0, end=None):
+    async def _extract(self, url, duration, count, referer="", start=0, end=None, width=854):
         pairs = []
         headers = f"User-Agent: {BILI_UA}\r\n" + (f"Referer: {referer}\r\n" if referer else "")
         try:
@@ -484,7 +497,7 @@ class VideoWatch:
                     remote = ["-rw_timeout", "15000000", "-headers", headers] if str(url).startswith(("http://", "https://")) else []
                     ok = await run_media([
                         "ffmpeg", "-y", "-loglevel", "error", *remote, "-ss", str(timestamp), "-i", url,
-                        "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "4", path,
+                        "-frames:v", "1", "-vf", f"scale={width}:-2", "-q:v", "3", path,
                     ])
                     if ok and os.path.getsize(path) > 1000:
                         pairs.append((timestamp, path))

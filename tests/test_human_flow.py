@@ -153,7 +153,7 @@ class FlowOrderTests(unittest.IsolatedAsyncioTestCase):
             topic_watch=None,
         )
         duty = duty_mod.BrowseDuty(plugin, store.directory)
-        duty._summarize = AsyncMock(return_value=([], [], ""))
+        duty._summarize = AsyncMock(return_value=([], [], "", []))
         original = duty_mod.collect_comments
         duty_mod.collect_comments = collect
         try:
@@ -203,7 +203,7 @@ class FlowOrderTests(unittest.IsolatedAsyncioTestCase):
             topic_watch=None,
         )
         duty = duty_mod.BrowseDuty(plugin, store.directory)
-        duty._summarize = AsyncMock(return_value=([], [], ""))
+        duty._summarize = AsyncMock(return_value=([], [], "", []))
         original = duty_mod.collect_comments
         duty_mod.collect_comments = collect
         try:
@@ -263,7 +263,7 @@ class FlowOrderTests(unittest.IsolatedAsyncioTestCase):
             topic_watch=None,
         )
         duty = duty_mod.BrowseDuty(plugin, store.directory)
-        duty._summarize = AsyncMock(return_value=([], [], ""))
+        duty._summarize = AsyncMock(return_value=([], [], "", []))
         original = duty_mod.collect_comments
         duty_mod.collect_comments = collect
         try:

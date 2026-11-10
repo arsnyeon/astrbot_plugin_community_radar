@@ -248,5 +248,93 @@ class MediaDeliveryTests(unittest.TestCase):
         self.assertIn("https://www.bilibili.com/video/BV1Fbpt6qEPq", text)
 
 
+class MessageParseTests(unittest.TestCase):
+    """模型可以逐句指定画面，解析后必须与文字对齐。"""
+
+    def setUp(self):
+        self.duty = BrowseDuty(Plugin({}))
+        self.catalog = [{"media_id": "a"}, {"media_id": "b"}]
+
+    def test_string_messages_have_no_image(self):
+        parts, media = self.duty._parse_messages(["一", "二"], self.catalog)
+        self.assertEqual(parts, ["一", "二"])
+        self.assertEqual(media, [None, None])
+
+    def test_dict_message_keeps_alignment(self):
+        parts, media = self.duty._parse_messages(
+            [{"text": "一", "image": 2}, {"text": "二"}, {"text": "三", "image": 1}],
+            self.catalog)
+        self.assertEqual(parts, ["一", "二", "三"])
+        self.assertEqual([m and m["media_id"] for m in media], ["b", None, "a"])
+
+    def test_out_of_range_index_is_dropped(self):
+        parts, media = self.duty._parse_messages([{"text": "一", "image": 9}], self.catalog)
+        self.assertEqual(parts, ["一"])
+        self.assertEqual(media, [None])
+
+    def test_bad_index_value_is_tolerated(self):
+        parts, media = self.duty._parse_messages([{"text": "一", "image": "x"}], self.catalog)
+        self.assertEqual(media, [None])
+
+    def test_empty_entries_are_skipped(self):
+        parts, media = self.duty._parse_messages(["", {"text": " "}, "有效"], self.catalog)
+        self.assertEqual(parts, ["有效"])
+        self.assertEqual(media, [None])
+
+    def test_non_list_input(self):
+        self.assertEqual(self.duty._parse_messages("not a list", self.catalog), ([], []))
+
+
+class AssignedMediaTests(unittest.TestCase):
+    """逐句指定画面时，图和它那句话必须绑在一起。"""
+
+    def setUp(self):
+        import tempfile
+
+        from radar_seg_test.media.media_cache import MediaCache
+
+        directory = Path(tempfile.mkdtemp(prefix="radar_part_"))
+        cache = MediaCache(directory)
+        self.first = cache.put(b"\xff\xd8first", kind="frame", timestamp=11)
+        self.second = cache.put(b"\xff\xd8second", kind="frame", timestamp=42)
+        self.plugin = Plugin({"share": {"enable": True}}, directory=str(directory))
+        self.duty = BrowseDuty(self.plugin)
+
+    def counts(self, bubbles):
+        return [len([p for p in chain if isinstance(p, tuple)]) for chain in bubbles]
+
+    def test_part_media_binds_image_to_its_own_message(self):
+        bubbles = self.duty._build_bubbles(
+            ["说海边", "说结尾"], [], "", "separate", [self.second, None])
+        self.assertEqual(self.counts(bubbles), [0, 1, 0], "第二张图应跟在第一条后面")
+        self.assertEqual(len(bubbles), 3)
+
+    def test_part_media_overrides_even_spread(self):
+        bubbles = self.duty._build_bubbles(
+            ["一", "二", "三"], [self.first, self.second], "", "together",
+            [None, self.first, None])
+        self.assertEqual(self.counts(bubbles), [0, 1, 0])
+
+    def test_missing_tail_is_padded(self):
+        bubbles = self.duty._build_bubbles(["一", "二"], [], "", "mixed", [self.first])
+        self.assertEqual(sum(self.counts(bubbles)), 1)
+
+    def test_empty_part_media_list_sends_text_only(self):
+        bubbles = self.duty._build_bubbles(["一", "二"], [], "", "mixed", [None, None])
+        self.assertEqual(sum(self.counts(bubbles)), 0)
+
+
+class ShareThresholdTests(unittest.TestCase):
+    def test_best_score_picks_max(self):
+        items = [{"_review": {"score": 4}}, {"_review": {"score": 8}}, {"_review": {}}]
+        self.assertEqual(BrowseDuty._best_score(items), 8.0)
+
+    def test_best_score_none_when_unknown(self):
+        self.assertIsNone(BrowseDuty._best_score([{"_review": {}}, {}]))
+
+    def test_best_score_ignores_out_of_range(self):
+        self.assertIsNone(BrowseDuty._best_score([{"_review": {"score": 99}}]))
+
+
 if __name__ == "__main__":
     unittest.main()

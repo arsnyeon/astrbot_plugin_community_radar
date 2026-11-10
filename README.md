@@ -118,6 +118,8 @@ https://github.com/arsnyeon/astrbot_plugin_community_radar
 | `share.style` | `chat`（分条聊天，默认）/ `forward`（随手转发） |
 | `share.max_images` | 一次分享最多几张画面，默认 5 |
 | `share.segment_max` | 最多分几条，默认 6 |
+| `share.min_score_to_share` | 至少多喜欢才值得分享，默认 6 |
+| `video.frame_source` | `ffmpeg`（抽真帧，默认）/ `storyboard`（官方缩略图，糊） |
 | `share.image_layout` | `auto`（它自己决定）/ `together` / `separate` / `mixed` |
 | `share.dry_run` | 试运行：照常成稿但不投递 |
 | `share.followup_groups` | 群里有人接话时自己回一句 |

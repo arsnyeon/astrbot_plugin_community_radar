@@ -229,7 +229,16 @@ class BrowseDuty:
             for x in items[:5]:
                 title = str(x.get("title") or "").strip()
                 if title:
-                    entries.append({"at": int(time.time()), "platform": platform, "title": title[:80]})
+                    entry = {"at": int(time.time()), "platform": platform, "title": title[:80]}
+                    # 记一句当时的看点，下一轮才能「想起来」而不是只看到标题。
+                    review = x.get("_review") or {}
+                    gist = str(review.get("review") or "").strip()
+                    if gist:
+                        entry["gist"] = gist[:60]
+                    words = [str(w).strip() for w in (review.get("keywords") or []) if str(w).strip()]
+                    if words:
+                        entry["words"] = words[:3]
+                    entries.append(entry)
         if not entries:
             return
         merged = entries + self._read_history()
@@ -243,7 +252,11 @@ class BrowseDuty:
             if not title or title in seen:
                 continue
             seen.add(title)
-            lines.append(f"- [{h.get('platform', '?')}] {title}")
+            line = f"- [{h.get('platform', '?')}] {title}"
+            gist = str(h.get("gist") or "").strip()
+            if gist:
+                line += f"（你当时的感受：{gist}）"
+            lines.append(line)
             if len(lines) >= limit:
                 break
         return "\n".join(lines)
@@ -380,24 +393,39 @@ class BrowseDuty:
         douyin = [it for it in understood if it.get("aweme_id")]
         tieba = [it for it in understood if it.get("_tieba")]
         if str(cfg.get("mode") or "summary") == "summary":
-            text, picked, layout = await self._summarize(bili, heybox, cfg, douyin, picks,
-                                                         plan=plan, topics=topics, tieba=tieba)
+            text, picked, layout, part_media = await self._summarize(
+                bili, heybox, cfg, douyin, picks, plan=plan, topics=topics, tieba=tieba)
         else:
-            text, picked, layout = [self._links(bili, heybox, douyin, tieba)], understood[:1], ""
+            text, picked, layout, part_media = (
+                [self._links(bili, heybox, douyin, tieba)], understood[:1], "", [])
         # 先读旧历史（_summarize 内部已读），再只记录本轮真正理解到的条目。
         self._record_history({"bili": bili, "heybox": heybox, "douyin": douyin, "tieba": tieba})
+
+        # 这一轮到底值不值得打扰别人：低于门槛就只看不说。
+        share_cfg = self.plugin.config.get("share") or {}
+        floor = number(share_cfg, "min_score_to_share", 6, 0, 10)
+        best = self._best_score(understood)
+        if text and best is not None and best < floor:
+            text, part_media = [], []
+            logger.info("[CommunityRadar] 本轮最高观感 %.1f 低于门槛 %.1f，不分享", best, floor)
+
         self.plugin.radar_store.set("last_browse", {"at": time.time(), "analyzed": len(understood),
                                                    "shared": bool(text),
-                                                   **({} if text else {"reason": "看完了，但没有想主动说的"})})
+                                                   **({} if text else {
+                                                       "reason": "看完了，但没到值得主动说的程度"})})
         if text:
             media = []
-            if cfg.get('attach_image', True):
-                share = self.plugin.config.get('share') or {}
+            if part_media and any(part_media):
+                # 模型已经逐句指定了画面，直接用它，别再按顺序重新挑一遍。
+                media = [item for item in part_media if isinstance(item, dict)]
+            elif cfg.get('attach_image', True):
                 media = await select_images(self.plugin, picked or understood,
-                                            int(number(share, 'max_images', 3, 0, 6)))
-            await self._send(text, cfg, image_url='' if media else self.autopilot.pick_image(cfg, picked),
+                                            int(number(share_cfg, 'max_images', 5, 0, 6)))
+                part_media = None
+            await self._send(text, cfg,
+                             image_url='' if (media or part_media) else self.autopilot.pick_image(cfg, picked),
                              context_items=picked or understood, selected_media=media,
-                             image_layout=layout)
+                             image_layout=layout, part_media=part_media)
         # 这一轮学到的内容汇总进 AstrBot 知识库；未配置或不可用时静默跳过。
         try:
             await kb_sync(self.plugin)
@@ -556,6 +584,30 @@ class BrowseDuty:
             board.remove(entry.get("url") or "", entry.get("title") or "")
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"[CommunityRadar] 想刷列表移除失败（{type(exc).__name__}）")
+
+    @staticmethod
+    def _best_score(items: list[dict]) -> float | None:
+        """取本轮这些内容的最高观感分。
+
+        有点时候模型给不出分数，这种情况下返回 ``None``，表示「不知道就别拦」，
+        避免因为一次解析失败就把整轮分享吞掉。
+
+        Args:
+            items: 已经看过并形成感想的条目。
+
+        Returns:
+            最高分；一条分数都拿不到时返回 ``None``。
+        """
+        scores = []
+        for item in items:
+            review = item.get("_review") or {}
+            try:
+                value = float(review.get("score"))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= value <= 10:
+                scores.append(value)
+        return max(scores) if scores else None
 
     async def _read_comments(self, item: dict, cfg: dict) -> None:
         """看完内容后顺手翻一下评论区；翻不到就跳过，不影响这条内容的结论。"""
@@ -990,19 +1042,53 @@ class BrowseDuty:
         plan: dict | None = None,
         topics: list[dict] | None = None,
         tieba: list[dict] | None = None,
-    ) -> tuple[list[str], list[dict], str]:
-        """让模型自己挑着聊，并决定分几条发。返回 (消息列表, 被挑中的条目)。"""
+    ) -> tuple[list[str], list[dict], str, list]:
+        """让模型自己挑着聊、决定分几条发、也决定哪句话配哪张画面。
+
+        Returns:
+            ``(消息列表, 被挑中的条目, 图文排布, 每句话对应的画面)``；最后一项与
+            消息列表等长，元素是 ``observed_media`` 里的字典或 ``None``。
+        """
         plan = plan or {}
         topics = topics or []
         candidates = self._ordered(plan, bili, heybox, douyin or [], tieba or [])
         links = self._links(bili, heybox, douyin, tieba)
         if not links:
-            return [], []
+            return [], [], "", []
 
         persona = await self._bot_persona(cfg) or DEFAULT_PERSONA
         interest_line = ("你最近比较在意的：" + "、".join(interests or []) + "。") if interests else ""
         history = self._recent_history(6)
-        history_line = ("\n你之前看过这些，别用同样的角度再聊一遍：\n" + history + "\n") if history else ""
+        history_line = ""
+        if history:
+            history_line = (
+                "\n你之前刷过这些：\n" + history + "\n"
+                "既不要用同样的角度再讲一遍；但如果这次看的和其中某条有关系"
+                "（同一题材、同一个作者、前后集、或者说法正好相反），可以说一句你想起来了，"
+                "像人那样把两件事串起来。没有关系就别硬凑。\n"
+            )
+
+        # 把实际截到的画面编号列出来，让模型自己指定哪句话配哪张，
+        # 而不是事后按顺序硬塞——那样经常出现「说海边、配了张人脸」。
+        catalog: list[dict] = []
+        for item in candidates:
+            for media in (item.get("_evidence") or {}).get("observed_media") or []:
+                if isinstance(media, dict) and media.get("media_id"):
+                    catalog.append(media)
+        catalog = catalog[:8]
+        media_line = ""
+        if catalog:
+            shots = []
+            for index, media in enumerate(catalog, 1):
+                stamp = media.get("timestamp")
+                shots.append(f"{index}. 第{stamp}秒" if stamp is not None else f"{index}. 未标时间")
+            media_line = (
+                "\n你实际截到的画面，编号只有这些：\n" + "；".join(shots) + "\n"
+                "如果某句话想配一张画面，把那条消息写成 {\"text\":\"你要说的话\",\"image\":编号}；"
+                "不配就 image 写 0。每条最多一张，总共不超过 "
+                f"{int(number(self.plugin.config.get('share') or {}, 'max_images', 5, 0, 6))} 张。\n"
+                "只配你这句话里真的提到的那张，对不上就干脆不配。\n"
+            )
 
         topic_line = ""
         if topics:
@@ -1058,11 +1144,12 @@ class BrowseDuty:
             )
             + topic_line
             + history_line
+            + media_line
             + "\n"
-            '只输出一个 JSON 对象：{"messages":["第一条","第二条"],"pick":编号或0,'
-            '"image_layout":"mixed","skip":false}\n'
+            '只输出一个 JSON 对象：{"messages":["第一条",{"text":"第二条","image":2}],'
+            '"pick":编号或0,"image_layout":"mixed","skip":false}\n'
             "messages 3~6 条，按你自己想怎么发就怎么发；"
-            "pick 填最想配画面的那一条编号，没有就填 0。\n"
+            "pick 填最想聊的那条内容编号，没有就填 0。\n"
             "image_layout 是你打算怎么发画面，自己看着办：\n"
             "  together = 画面跟那句文字放在同一条里发\n"
             "  separate = 先说文字，画面单独发出去\n"
@@ -1078,28 +1165,67 @@ class BrowseDuty:
             data = parse_json(raw)
             if data:
                 if data.get("skip") is True:
-                    return [], [], ""
+                    return [], [], "", []
                 messages = data.get("messages")
-                if isinstance(messages, list):
-                    parts = [str(x).strip() for x in messages if str(x).strip()]
-                else:
+                parts, media_map = self._parse_messages(messages, catalog)
+                if not parts:
                     parts = self._split_chat(str(data.get("say") or "").strip())
-                parts = self._clean_parts(parts, 4 if style == "forward" else int(cfg.get("segment_max") or 6))
+                limit = 4 if style == "forward" else int(cfg.get("segment_max") or 6)
+                if any(media_map):
+                    # 已经指定了画面，就不要重排：直接按条数截断，保持图文对应。
+                    parts, media_map = parts[:limit], media_map[:limit]
+                else:
+                    parts = self._clean_parts(parts, limit)
+                    media_map = [None] * len(parts)
                 try:
                     idx = int(data.get("pick") or 0)
                 except Exception:  # noqa: BLE001
                     idx = 0
                 if 1 <= idx <= len(candidates):
                     picked = [candidates[idx - 1]]
-                return parts, picked, self._layout_of(data.get("image_layout"))
+                return parts, picked, self._layout_of(data.get("image_layout")), media_map
             # 模型没按 JSON 来，就按纯文本兜底
             if "[跳过]" in raw or raw.strip("[]【】 ") == "跳过":
-                return [], [], ""
-            return (self._clean_parts(self._split_chat(raw.strip()),
-                                      int(cfg.get("segment_max") or 3)), [], "")
+                return [], [], "", []
+            fallback = self._clean_parts(self._split_chat(raw.strip()),
+                                         int(cfg.get("segment_max") or 3))
+            return fallback, [], "", [None] * len(fallback)
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[CommunityRadar] 点评生成未完成，本轮保持安静（{type(exc).__name__}）")
-            return [], [], ""
+            return [], [], "", []
+
+    def _parse_messages(self, messages, catalog: list[dict]) -> tuple[list[str], list]:
+        """解析模型给的消息列表，同时取出每句话配的画面。
+
+        模型可以只给字符串，也可以给 ``{"text": ..., "image": 编号}``。编号对应
+        :func:`_summarize` 里列给它的画面清单，越界或没写都当作「不配图」。
+
+        Args:
+            messages: 模型返回的 ``messages`` 字段。
+            catalog: 编号对应的画面列表。
+
+        Returns:
+            ``(文字列表, 画面列表)``，两者等长。
+        """
+        parts: list[str] = []
+        media_map: list = []
+        if not isinstance(messages, list):
+            return parts, media_map
+        for entry in messages:
+            index = 0
+            if isinstance(entry, dict):
+                text = str(entry.get("text") or entry.get("say") or "").strip()
+                try:
+                    index = int(entry.get("image") or 0)
+                except (TypeError, ValueError):
+                    index = 0
+            else:
+                text = str(entry).strip()
+            if not text:
+                continue
+            parts.append(text)
+            media_map.append(catalog[index - 1] if 1 <= index <= len(catalog) else None)
+        return parts, media_map
 
     @staticmethod
     def _layout_of(value) -> str:
@@ -1296,7 +1422,8 @@ class BrowseDuty:
         return buckets
 
     def _build_bubbles(self, parts: list[str], media: list[dict],
-                       image_url: str = "", layout: str = "") -> list[list]:
+                       image_url: str = "", layout: str = "",
+                       part_media: list | None = None) -> list[list]:
         """按它自己的打算，把文字与画面拆成一条条消息。
 
         是否把图和文字放在同一条里，这属于说话习惯，交给模型决定；这里只负责把
@@ -1308,19 +1435,29 @@ class BrowseDuty:
 
         Args:
             parts: 已切分的文字消息。
-            media: ``select_images`` 返回的画面列表。
+            media: 未指定归属时的候选画面（``select_images`` 的结果）。
             image_url: 封面等回退图地址，可为空。
             layout: 模型给出的排布方式；无法识别时按 ``mixed`` 处理。
+            part_media: 模型逐句指定的画面，与 ``parts`` 等长；给了就优先用它，
+                这样才能保证「说海边就配海边那张」。
 
         Returns:
             消息组件列表的列表，每一项对应一次发送。
         """
         mode = layout if layout in ("together", "separate", "mixed") else "mixed"
-        buckets = self._spread_media(parts, media)
-        cache = MediaCache(self.plugin.radar_store.directory) if media else None
+        if part_media is not None:
+            buckets: list[list[dict]] = [
+                [item] if isinstance(item, dict) and item.get("media_id") else []
+                for item in (list(part_media) + [None] * len(parts))[:len(parts)]
+            ]
+        else:
+            buckets = self._spread_media(parts, media)
+        cache = MediaCache(self.plugin.radar_store.directory) if (media or part_media) else None
 
         def picture(item):
-            data = cache.read(item.get("media_id")) if cache is not None else None
+            if cache is None:
+                return None
+            data = cache.read(item.get("media_id"))
             return Image.fromBytes(data) if data else None
 
         bubbles: list[list] = []
@@ -1345,7 +1482,7 @@ class BrowseDuty:
                 bubbles[-1].append(cover)
         return bubbles
 
-    async def _send(self, text, cfg, *, image_url="", context_items=None, selected_media=None, image_layout=""):
+    async def _send(self, text, cfg, *, image_url="", context_items=None, selected_media=None, image_layout="", part_media=None):
         share_cfg = self.plugin.config.get("share") or {}
         if not share_cfg.get("enable", True):
             return False
@@ -1370,15 +1507,22 @@ class BrowseDuty:
                 "items": [str(it.get("title") or "")[:80] for it in (context_items or [])[:6]],
                 # 试运行时把「图文怎么排」也记下来，方便核对是不是想要的效果。
                 "layout": layout or "mixed",
+                "image_parts": [i + 1 for i, item in enumerate(part_media or [])
+                                if isinstance(item, dict)],
                 "bubbles": len(self._build_bubbles(parts, list(selected_media or []),
-                                                   image_url, layout)),
+                                                   image_url, layout, part_media)),
             })
             logger.info("[CommunityRadar] 分享试运行：本轮不投递")
             return False
         keys = sorted({content_id(str(it.get("_link") or it.get("url") or "")) for it in context_items or []} - {""})
         key = "|".join(keys) if keys else "text:" + __import__("hashlib").sha256("\n".join(parts).encode()).hexdigest()
         delay = max(0.0, min(5.0, float(share_cfg.get("segment_delay") or 1.2)))
-        bubbles = self._build_bubbles(parts, list(selected_media or []), image_url, layout)
+        bubbles = self._build_bubbles(parts, list(selected_media or []), image_url, layout, part_media)
+        if part_media:
+            slots = [i + 1 for i, item in enumerate(part_media) if isinstance(item, dict)]
+            if slots:
+                logger.info("[CommunityRadar] 按模型指定配图：共 %s 张，落在第 %s 条",
+                            len(slots), "/".join(str(n) for n in slots))
         delivered = False
         for target in targets:
             if ":GroupMessage:" in target and not want_group:

@@ -526,6 +526,12 @@
         "hint": "开启后照常挑内容、生成文案，但不真的发出去，只把这一轮准备发的内容记在 /社区雷达 状态 里。建议先在群里观察一轮再关掉。",
         "default": false
       },
+      "min_score_to_share": {
+        "type": "int",
+        "description": "至少多喜欢才值得分享",
+        "hint": "0~10，默认 6。本轮最高的观感分低于这个值就只看不说；设 0 表示只要有话说就发。",
+        "default": 6
+      },
       "max_per_day": {
         "type": "int",
         "description": "每天最多分享几条",
@@ -627,6 +633,19 @@
         "description": "没字幕时抽帧描述画面",
         "hint": "需要配置支持图片输入的模型；关掉则只看简介。",
         "default": true
+      },
+      "frame_source": {
+        "type": "string",
+        "description": "B 站画面从哪取",
+        "hint": "ffmpeg = 抽真帧，画质清晰（默认，需要 ffmpeg 和能拿到播放直链）；storyboard = 用官方缩略图拼版，省流量不用 ffmpeg，但画面很糊。ffmpeg 不可用时会自动退回拼版。",
+        "options": ["ffmpeg", "storyboard"],
+        "default": "ffmpeg"
+      },
+      "frame_width": {
+        "type": "int",
+        "description": "画面宽度（像素）",
+        "hint": "默认 854。调高更清晰但更占流量与缓存；480~1280。",
+        "default": 854
       },
       "frames": {
         "type": "int",
@@ -775,6 +794,12 @@
         "description": "轮询间隔（秒）",
         "default": 300
       },
+      "min_score_to_share": {
+        "type": "int",
+        "description": "至少多喜欢才值得分享",
+        "hint": "0~10，默认 6。本轮最高的观感分低于这个值就只看不说；设 0 表示只要有话说就发。",
+        "default": 6
+      },
       "max_per_day": {
         "type": "int",
         "description": "每位用户每日私信回复上限",
@@ -811,6 +836,12 @@
         "type": "string",
         "description": "收藏夹ID",
         "default": ""
+      },
+      "min_score_to_share": {
+        "type": "int",
+        "description": "至少多喜欢才值得分享",
+        "hint": "0~10，默认 6。本轮最高的观感分低于这个值就只看不说；设 0 表示只要有话说就发。",
+        "default": 6
       },
       "max_per_day": {
         "type": "int",
