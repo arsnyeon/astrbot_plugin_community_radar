@@ -543,6 +543,13 @@
         "hint": "0 关闭画面选图，最多 6，默认 5。模型只挑自己觉得有意思、有信息量的画面，通常 3~6 张；多张会分散到不同消息，不会堆在一条。",
         "default": 5
       },
+      "image_layout": {
+        "type": "string",
+        "description": "图文怎么发",
+        "hint": "auto = 交给它自己决定（默认）；together = 图和文字同一条；separate = 图单独发；mixed = 有的跟文字、有的单独。",
+        "options": ["auto", "together", "separate", "mixed"],
+        "default": "auto"
+      },
       "segment_max": {
         "type": "int",
         "description": "最多分几条",

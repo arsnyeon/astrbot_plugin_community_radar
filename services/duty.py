@@ -380,10 +380,10 @@ class BrowseDuty:
         douyin = [it for it in understood if it.get("aweme_id")]
         tieba = [it for it in understood if it.get("_tieba")]
         if str(cfg.get("mode") or "summary") == "summary":
-            text, picked = await self._summarize(bili, heybox, cfg, douyin, picks,
-                                                 plan=plan, topics=topics, tieba=tieba)
+            text, picked, layout = await self._summarize(bili, heybox, cfg, douyin, picks,
+                                                         plan=plan, topics=topics, tieba=tieba)
         else:
-            text, picked = [self._links(bili, heybox, douyin, tieba)], understood[:1]
+            text, picked, layout = [self._links(bili, heybox, douyin, tieba)], understood[:1], ""
         # 先读旧历史（_summarize 内部已读），再只记录本轮真正理解到的条目。
         self._record_history({"bili": bili, "heybox": heybox, "douyin": douyin, "tieba": tieba})
         self.plugin.radar_store.set("last_browse", {"at": time.time(), "analyzed": len(understood),
@@ -396,7 +396,8 @@ class BrowseDuty:
                 media = await select_images(self.plugin, picked or understood,
                                             int(number(share, 'max_images', 3, 0, 6)))
             await self._send(text, cfg, image_url='' if media else self.autopilot.pick_image(cfg, picked),
-                             context_items=picked or understood, selected_media=media)
+                             context_items=picked or understood, selected_media=media,
+                             image_layout=layout)
         # 这一轮学到的内容汇总进 AstrBot 知识库；未配置或不可用时静默跳过。
         try:
             await kb_sync(self.plugin)
@@ -989,7 +990,7 @@ class BrowseDuty:
         plan: dict | None = None,
         topics: list[dict] | None = None,
         tieba: list[dict] | None = None,
-    ) -> tuple[list[str], list[dict]]:
+    ) -> tuple[list[str], list[dict], str]:
         """让模型自己挑着聊，并决定分几条发。返回 (消息列表, 被挑中的条目)。"""
         plan = plan or {}
         topics = topics or []
@@ -1058,9 +1059,15 @@ class BrowseDuty:
             + topic_line
             + history_line
             + "\n"
-            '只输出一个 JSON 对象：{"messages":["第一条","第二条"],"pick":编号或0,"skip":false}\n'
+            '只输出一个 JSON 对象：{"messages":["第一条","第二条"],"pick":编号或0,'
+            '"image_layout":"mixed","skip":false}\n'
             "messages 3~6 条，按你自己想怎么发就怎么发；"
-            "pick 填最想配画面的那一条编号，没有就填 0。\n\n"
+            "pick 填最想配画面的那一条编号，没有就填 0。\n"
+            "image_layout 是你打算怎么发画面，自己看着办：\n"
+            "  together = 画面跟那句文字放在同一条里发\n"
+            "  separate = 先说文字，画面单独发出去\n"
+            "  mixed = 有的跟文字一起发、有的单独发，最像随手分享\n"
+            "链接必须是完整网址（以 https:// 开头），不要只写 BV 号或编号。\n\n"
             f"内容：\n{numbered}"
         )
         system_prompt = "你在跟朋友聊自己刚刷到的东西。口语化、自然、有个人好恶，不写小作文。只输出 JSON。"
@@ -1071,7 +1078,7 @@ class BrowseDuty:
             data = parse_json(raw)
             if data:
                 if data.get("skip") is True:
-                    return [], []
+                    return [], [], ""
                 messages = data.get("messages")
                 if isinstance(messages, list):
                     parts = [str(x).strip() for x in messages if str(x).strip()]
@@ -1084,14 +1091,21 @@ class BrowseDuty:
                     idx = 0
                 if 1 <= idx <= len(candidates):
                     picked = [candidates[idx - 1]]
-                return parts, picked
+                return parts, picked, self._layout_of(data.get("image_layout"))
             # 模型没按 JSON 来，就按纯文本兜底
             if "[跳过]" in raw or raw.strip("[]【】 ") == "跳过":
-                return [], []
-            return self._clean_parts(self._split_chat(raw.strip()), int(cfg.get("segment_max") or 3)), []
+                return [], [], ""
+            return (self._clean_parts(self._split_chat(raw.strip()),
+                                      int(cfg.get("segment_max") or 3)), [], "")
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[CommunityRadar] 点评生成未完成，本轮保持安静（{type(exc).__name__}）")
-            return [], []
+            return [], [], ""
+
+    @staticmethod
+    def _layout_of(value) -> str:
+        """把模型给的图文排布说法收敛成三选一，无法识别时返回空串。"""
+        text = str(value or "").strip().lower()
+        return text if text in ("together", "separate", "mixed") else ""
 
     @staticmethod
     def _split_chat(text: str, max_parts: int = 5) -> list[str]:
@@ -1102,6 +1116,31 @@ class BrowseDuty:
         raw = re.split(r"(?<=[。！？!?])\s*|\n+", s)
         out = [piece.strip() for piece in raw if piece.strip()]
         return BrowseDuty._clean_parts(out, max_parts)
+
+    #: 裸视频编号：前面不是网址里的 ``/``、后面也不再接字母数字时才算。
+    #: 模型偶尔会把完整链接缩写成「BV1Fbpt6qEPq」，在客户端里就只是一个点不开的字符串。
+    _BARE_VID = re.compile(r"(?<![A-Za-z0-9/])((?:BV[0-9A-Za-z]{10})|(?:av\d{6,}))(?![0-9A-Za-z/])")
+    _BILI_URL = "https://www.bilibili.com/video/"
+
+    @staticmethod
+    def _full_links(parts: list[str]) -> list[str]:
+        """把裸的 B 站视频编号补成可点击的完整链接。
+
+        只处理 B 站编号：其它平台的编号形态容易和普通词撞车，误补反而更糟。
+        已经写在网址里的编号不会被二次替换，因此重复调用是安全的。
+
+        Args:
+            parts: 待发送的消息片段。
+
+        Returns:
+            补全后的消息片段，顺序与数量不变。
+        """
+        out: list[str] = []
+        for part in parts:
+            text = str(part)
+            out.append(BrowseDuty._BARE_VID.sub(
+                lambda match: BrowseDuty._BILI_URL + match.group(1), text))
+        return out
 
     @staticmethod
     def _clean_parts(parts: list[str], max_parts: int = 5) -> list[str]:
@@ -1256,7 +1295,57 @@ class BrowseDuty:
             buckets[slots[index % len(slots)]].append(item)
         return buckets
 
-    async def _send(self, text, cfg, *, image_url="", context_items=None, selected_media=None):
+    def _build_bubbles(self, parts: list[str], media: list[dict],
+                       image_url: str = "", layout: str = "") -> list[list]:
+        """按它自己的打算，把文字与画面拆成一条条消息。
+
+        是否把图和文字放在同一条里，这属于说话习惯，交给模型决定；这里只负责把
+        三种排布实现出来：
+
+        - ``together``：画面跟所属那句文字放在同一条里发
+        - ``separate``：先发文字，画面单独一条
+        - ``mixed``（默认）：奇数条跟着文字一起发、偶数条单独发，最像随手分享
+
+        Args:
+            parts: 已切分的文字消息。
+            media: ``select_images`` 返回的画面列表。
+            image_url: 封面等回退图地址，可为空。
+            layout: 模型给出的排布方式；无法识别时按 ``mixed`` 处理。
+
+        Returns:
+            消息组件列表的列表，每一项对应一次发送。
+        """
+        mode = layout if layout in ("together", "separate", "mixed") else "mixed"
+        buckets = self._spread_media(parts, media)
+        cache = MediaCache(self.plugin.radar_store.directory) if media else None
+
+        def picture(item):
+            data = cache.read(item.get("media_id")) if cache is not None else None
+            return Image.fromBytes(data) if data else None
+
+        bubbles: list[list] = []
+        for index, part in enumerate(parts):
+            chain: list = [Plain(part)]
+            attach = mode == "together" or (mode == "mixed" and index % 2 == 0)
+            loose: list = []
+            for item in buckets[index]:
+                component = picture(item)
+                if component is None:
+                    continue
+                (chain if attach else loose).append(component)
+            bubbles.append(chain)
+            bubbles.extend([component] for component in loose)
+        if image_url:
+            # 封面本来就是「配一张图」的意思，跟着最后一句更自然。
+            try:
+                cover = Image.fromURL(image_url)
+            except Exception:  # noqa: BLE001 - 封面取不到就不发，不影响文字
+                cover = None
+            if cover is not None:
+                bubbles[-1].append(cover)
+        return bubbles
+
+    async def _send(self, text, cfg, *, image_url="", context_items=None, selected_media=None, image_layout=""):
         share_cfg = self.plugin.config.get("share") or {}
         if not share_cfg.get("enable", True):
             return False
@@ -1265,6 +1354,11 @@ class BrowseDuty:
         want_group = self.autopilot.wants_group(cfg, group_cfg)
         parts = text if isinstance(text, list) else self._split_chat(str(text or ""))
         parts = self._clean_parts(parts, int(share_cfg.get("segment_max") or 5))
+        # 模型有时会把完整链接缩写成裸编号，先补全再进入投递与预览。
+        parts = self._full_links(parts)
+        # 配置里锁死了图文排布就照配置，否则用模型这次自己决定的。
+        forced = str(share_cfg.get("image_layout") or "auto").strip().lower()
+        layout = forced if forced in ("together", "separate", "mixed") else image_layout
         if not share_cfg.get("segment", True):
             parts = ["\n".join(parts)]
         if not parts:
@@ -1274,12 +1368,17 @@ class BrowseDuty:
             self.plugin.radar_store.set("last_preview", {
                 "at": time.time(), "targets": targets, "parts": parts[:6],
                 "items": [str(it.get("title") or "")[:80] for it in (context_items or [])[:6]],
+                # 试运行时把「图文怎么排」也记下来，方便核对是不是想要的效果。
+                "layout": layout or "mixed",
+                "bubbles": len(self._build_bubbles(parts, list(selected_media or []),
+                                                   image_url, layout)),
             })
             logger.info("[CommunityRadar] 分享试运行：本轮不投递")
             return False
         keys = sorted({content_id(str(it.get("_link") or it.get("url") or "")) for it in context_items or []} - {""})
         key = "|".join(keys) if keys else "text:" + __import__("hashlib").sha256("\n".join(parts).encode()).hexdigest()
         delay = max(0.0, min(5.0, float(share_cfg.get("segment_delay") or 1.2)))
+        bubbles = self._build_bubbles(parts, list(selected_media or []), image_url, layout)
         delivered = False
         for target in targets:
             if ":GroupMessage:" in target and not want_group:
@@ -1290,27 +1389,15 @@ class BrowseDuty:
             if not token:
                 continue
             sent = 0
-            media_by_part = self._spread_media(parts, list(selected_media or []))
             try:
-                for index, part in enumerate(parts):
-                    chain = [Plain(part)]
-                    for media in media_by_part[index]:
-                        cache = MediaCache(self.plugin.radar_store.directory)
-                        data = cache.read(media.get('media_id'))
-                        if data:
-                            chain.append(Image.fromBytes(data))
-                    if image_url and index == len(parts) - 1:
-                        try:
-                            chain.append(Image.fromURL(image_url))
-                        except Exception:
-                            pass
+                for index, chain in enumerate(bubbles):
                     result = await self.plugin.context.send_message(target, MessageChain(chain))
                     if result is False:
                         break
                     sent += 1
-                    if index < len(parts) - 1 and delay:
+                    if index < len(bubbles) - 1 and delay:
                         await asyncio.sleep(delay + random.random() * 0.6)
-                if sent == len(parts):
+                if sent == len(bubbles):
                     self.plugin.radar_store.finish(token, "success")
                     remember_session(self.plugin.radar_store, target, context_items or [])
                     # 新的一轮分享，接话次数重新算。

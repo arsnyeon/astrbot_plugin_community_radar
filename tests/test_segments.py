@@ -131,8 +131,76 @@ class SpreadMediaTests(unittest.TestCase):
         self.assertLessEqual(max(len(b) for b in buckets), 2)
 
 
+class LinkTests(unittest.TestCase):
+    """模型偶尔把完整链接缩写成裸编号，投递前必须补全。"""
+
+    def test_bare_bv_becomes_url(self):
+        out = BrowseDuty._full_links(["看这个 BV1Fbpt6qEPq 有点意思"])
+        self.assertEqual(out[0], "看这个 https://www.bilibili.com/video/BV1Fbpt6qEPq 有点意思")
+
+    def test_existing_url_is_untouched(self):
+        url = "https://www.bilibili.com/video/BV1Fbpt6qEPq"
+        self.assertEqual(BrowseDuty._full_links([url]), [url])
+
+    def test_av_number_is_expanded(self):
+        out = BrowseDuty._full_links(["av12345678"])
+        self.assertTrue(out[0].startswith("https://www.bilibili.com/video/av"))
+
+    def test_normalization_is_idempotent(self):
+        once = BrowseDuty._full_links(["BV1Fbpt6qEPq"])
+        self.assertEqual(BrowseDuty._full_links(once), once)
+
+    def test_short_or_embedded_words_are_not_touched(self):
+        for text in ("BV1Fbpt6", "abcBV1Fbpt6qEPqxyz", "没有编号"):
+            self.assertEqual(BrowseDuty._full_links([text]), [text])
+
+
+class BubbleLayoutTests(unittest.TestCase):
+    """图文怎么发由模型决定，这里验证三种排布的实际结果。"""
+
+    def setUp(self):
+        import tempfile
+
+        from radar_seg_test.media.media_cache import MediaCache
+
+        directory = Path(tempfile.mkdtemp(prefix="radar_layout_"))
+        cache = MediaCache(directory)
+        self.media = [cache.put(b"\xff\xd8a", kind="frame", timestamp=1),
+                      cache.put(b"\xff\xd8b", kind="frame", timestamp=2)]
+        self.plugin = Plugin({"share": {"enable": True}}, directory=str(directory))
+        self.duty = BrowseDuty(self.plugin)
+
+    def counts(self, bubbles):
+        return [len([p for p in chain if isinstance(p, tuple)]) for chain in bubbles]
+
+    def test_together_attaches_images_to_their_text(self):
+        bubbles = self.duty._build_bubbles(["一", "二"], self.media, "", "together")
+        self.assertEqual(len(bubbles), 2, "图不应单独成条")
+        self.assertEqual(sum(self.counts(bubbles)), 2)
+
+    def test_separate_sends_images_alone(self):
+        bubbles = self.duty._build_bubbles(["一", "二"], self.media, "", "separate")
+        self.assertEqual(len(bubbles), 4, "两条文字 + 两张独立图")
+        self.assertEqual(self.counts(bubbles), [0, 1, 0, 1])
+
+    def test_mixed_alternates(self):
+        bubbles = self.duty._build_bubbles(["一", "二"], self.media, "", "mixed")
+        self.assertEqual(self.counts(bubbles)[0], 1, "第一条跟文字一起发")
+        self.assertEqual(sum(self.counts(bubbles)), 2)
+        self.assertEqual(len(bubbles), 3)
+
+    def test_unknown_layout_falls_back_to_mixed(self):
+        bubbles = self.duty._build_bubbles(["一", "二"], self.media, "", "随便写的")
+        self.assertEqual(len(bubbles), 3)
+
+    def test_cover_rides_along_with_last_text(self):
+        bubbles = self.duty._build_bubbles(["一", "二"], [], "https://x/y.jpg", "separate")
+        self.assertEqual(len(bubbles), 2)
+        self.assertEqual(self.counts(bubbles), [0, 1])
+
+
 class MediaDeliveryTests(unittest.TestCase):
-    def test_images_are_sent_in_separate_bubbles(self):
+    def _send(self, share_cfg, layout="", media=None):
         import asyncio
         import tempfile
 
@@ -142,17 +210,42 @@ class MediaDeliveryTests(unittest.TestCase):
         cache = MediaCache(directory)
         first = cache.put(b"\xff\xd8fake-jpeg-1", kind="frame", timestamp=5)
         second = cache.put(b"\xff\xd8fake-jpeg-2", kind="frame", timestamp=9)
+        plugin = Plugin(dict({"share": {"enable": True, "segment": True, "segment_delay": 0}},
+                             **share_cfg), directory=str(directory))
+        duty = BrowseDuty(plugin)
+        asyncio.run(duty._send(["第一句", "第二句", "第三句"],
+                               {"targets": ["x:FriendMessage:1"]},
+                               selected_media=media if media is not None else [first, second],
+                               image_layout=layout))
+        counts = [len([p for p in chain if isinstance(p, tuple)]) for _, chain in plugin.sent]
+        return plugin, counts
 
+    def test_separate_layout_makes_extra_bubbles(self):
+        plugin, counts = self._send({"share": {"enable": True, "segment": True,
+                                               "segment_delay": 0,
+                                               "image_layout": "separate"}})
+        self.assertEqual(sum(counts), 2)
+        self.assertEqual(max(counts), 1, "单独发时一条只有一张图")
+
+    def test_config_locks_layout_over_model_choice(self):
+        plugin, counts = self._send({"share": {"enable": True, "segment": True,
+                                               "segment_delay": 0,
+                                               "image_layout": "together"}},
+                                    layout="separate")
+        self.assertEqual(len(plugin.sent), 3, "强制 together 时不应多出图片气泡")
+        self.assertEqual(sum(counts), 2)
+
+    def test_bare_bv_is_expanded_before_sending(self):
+        import asyncio
+        import tempfile
+
+        directory = Path(tempfile.mkdtemp(prefix="radar_seg_"))
         plugin = Plugin({"share": {"enable": True, "segment": True, "segment_delay": 0}},
                         directory=str(directory))
-        duty = BrowseDuty(plugin)
-        cfg = {"targets": ["x:FriendMessage:1"]}
-        asyncio.run(duty._send(["第一句", "第二句", "第三句"], cfg,
-                               selected_media=[first, second]))
-        self.assertEqual(len(plugin.sent), 3)
-        image_counts = [len([p for p in chain if isinstance(p, tuple)]) for _, chain in plugin.sent]
-        self.assertEqual(sum(image_counts), 2, "两张图应分别发出")
-        self.assertEqual(max(image_counts), 1, "同一条消息不应堆多张图")
+        asyncio.run(BrowseDuty(plugin)._send(["看 BV1Fbpt6qEPq"],
+                                             {"targets": ["x:FriendMessage:1"]}))
+        text = plugin.sent[0][1][0].text
+        self.assertIn("https://www.bilibili.com/video/BV1Fbpt6qEPq", text)
 
 
 if __name__ == "__main__":
