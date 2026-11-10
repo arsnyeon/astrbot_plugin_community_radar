@@ -267,7 +267,10 @@ class FlowOrderTests(unittest.IsolatedAsyncioTestCase):
         original = duty_mod.collect_comments
         duty_mod.collect_comments = collect
         try:
-            await duty._run({"count": 2, "pause_min_seconds": 0, "pause_max_seconds": 0})
+            # boredom_chance 置零：否则有约 12% 概率在第一条后随机收手，
+            # 断言「两条都形成感想」会变成偶发失败。
+            await duty._run({"count": 2, "pause_min_seconds": 0, "pause_max_seconds": 0,
+                             "boredom_chance": 0})
         finally:
             duty_mod.collect_comments = original
 
