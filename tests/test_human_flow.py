@@ -58,6 +58,35 @@ video = __import__(pkg.__name__ + ".media.video_watch", fromlist=["x"])
 NS = types.SimpleNamespace
 
 
+class LowValueCommentTests(unittest.TestCase):
+    """评论区只留有人话的部分，纯表情和广告不占上下文额度。"""
+
+    def test_pure_reactions_and_placeholders_are_dropped(self):
+        for text in ("哈哈", "哈哈哈哈", "[表情]", "[图片]", "？？？", "6", "@张三 @李四", ""):
+            self.assertTrue(comments.is_low_value(text), text)
+
+    def test_advertisement_is_dropped(self):
+        for text in ("加微信领取资料", "点击链接下载app", "代刷粉丝私信我"):
+            self.assertTrue(comments.is_low_value(text), text)
+
+    def test_real_comment_is_kept(self):
+        for text in ("这游戏难度确实高，卡在第三关了", "91块还一堆红问号", "啊这"):
+            self.assertFalse(comments.is_low_value(text), text)
+
+    def test_normalize_filters_then_sorts(self):
+        raw = [
+            {"text": "哈哈", "likes": 100},
+            {"text": "加微领取", "likes": 50},
+            {"text": "这游戏真不错", "likes": 3},
+            {"text": "价格劝退", "likes": 9},
+        ]
+        out = comments.normalize_comments(raw, limit=5)
+        self.assertEqual([c["text"] for c in out], ["价格劝退", "这游戏真不错"])
+
+    def test_all_filtered_returns_empty(self):
+        self.assertEqual(comments.normalize_comments([{"text": "哈哈哈"}, {"text": "[表情]"}], 5), [])
+
+
 class NormalizeTests(unittest.TestCase):
     def test_three_client_shapes_normalize_to_one(self):
         raw = [
@@ -460,6 +489,52 @@ class FrameBudgetTests(unittest.TestCase):
         self.assertEqual(video.frame_budget(3600, 12), 12)
         self.assertEqual(video.frame_budget(0, 6), 4)
         self.assertEqual(video.frame_budget(600, 0), 0)
+
+
+class PageOverviewTests(unittest.TestCase):
+    """插件页面的数据汇总必须容错：任一服务缺失也不能抛。"""
+
+    def payload(self, **overrides):
+        page = __import__(pkg.__name__ + ".handlers.page_api", fromlist=["x"])
+        store = NS(get=lambda k, d=None: {"last_browse": {"at": 1, "analyzed": 2}}.get(k, d),
+                   stats=lambda: {"memory": 5, "events": 9, "share_today": 1},
+                   preferences=lambda: [{"value": "独立游戏", "polarity": "like", "strength": 0.8}],
+                   curiosity=lambda n=6: ["银松镇"])
+        base = dict(
+            config={"browse": {"enable": True, "platforms": "all"},
+                    "share": {"enable": True, "dry_run": False, "style": "chat",
+                              "max_per_day": 8, "max_images": 5, "min_score_to_share": 6},
+                    "video": {"frame_source": "ffmpeg", "frame_width": 854,
+                              "frame_compose": "auto", "ocr_subtitles": True,
+                              "ocr_fps": 1, "ocr_max_frames": 60}},
+            radar_store=store,
+            knowledge=NS(stats=lambda: {"total": 3, "knowledge": 1, "meme": 1, "term": 1}),
+            watchlist=NS(peek=lambda n=8: [{"title": "某视频", "url": "u", "from_user": "群友"}]),
+            health=NS(summary=lambda: {"bili": {"fails": 2, "reason": "-101"}}),
+            duty=NS(next_run_text=lambda: "11-11 09:20"),
+        )
+        base.update(overrides)
+        return page.PageMixin._overview_payload(NS(**base))
+
+    def test_payload_has_all_sections(self):
+        data = self.payload()
+        for key in ("browse", "share", "ledger", "knowledge", "interests",
+                    "watchlist", "health", "video"):
+            self.assertIn(key, data)
+        self.assertEqual(data["browse"]["next_run"], "11-11 09:20")
+        self.assertEqual(data["share"]["today"], 1)
+        self.assertEqual(data["video"]["ocr"]["enabled"], True)
+
+    def test_missing_services_do_not_break(self):
+        data = self.payload(knowledge=None, watchlist=None, health=None)
+        self.assertEqual(data["knowledge"], {})
+        self.assertEqual(data["watchlist"], [])
+        self.assertEqual(data["health"], {})
+
+    def test_interests_are_trimmed(self):
+        data = self.payload()
+        self.assertEqual(len(data["interests"]), 1)
+        self.assertEqual(data["interests"][0]["value"], "独立游戏")
 
 
 class SegmentTests(unittest.TestCase):

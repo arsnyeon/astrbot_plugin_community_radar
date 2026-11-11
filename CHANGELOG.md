@@ -1,5 +1,50 @@
 # CHANGELOG
 
+## v0.19.0
+
+补上四块能力：读硬字幕、挑更好的画面、把画面拼成一张、以及一个状态页。
+
+### 读画面里的硬字幕（可选）
+
+很多 B 站视频没有官方字幕，只有压在画面上的硬字幕，这类视频以前只能靠画面描述猜内容。
+
+- 新增 `media/subtitle_ocr.py`：一次 ffmpeg 把底部字幕条按固定帧率抽成小图 → OCR → 相邻相同帧视为同一句、只延长时间 → 合并成带时间轴的字幕轨。
+- 只裁底部 32%（`crop=iw:ih*0.32:0:ih*0.68`），降采样到 640 宽，并跳过与上一帧几乎相同的画面，省掉大部分 OCR 开销。
+- 有官方字幕时优先用官方；OCR 只在没有官方字幕且拿到播放直链时触发。读到之后会在局限里写明「字幕由画面 OCR 得到，可能有识别错误」，不假装是官方字幕。
+- 引擎是可选依赖 `rapidocr_onnxruntime`，没装就整体跳过，不影响其它能力。配置：`video.ocr_subtitles`（默认关）、`ocr_fps`、`ocr_max_frames`、`ocr_region`、`ocr_time_budget`。
+
+### 挑出彼此不一样的画面
+
+均匀采样容易连着抽到同一镜头的近似帧，既浪费 tokens 也不好看。
+
+- 新增 `media/frames.py`：把每帧压成 8×8 灰度签名，先保头尾保证覆盖，再每次挑「与已选帧差异最大」的那张，差异不够大就提前收手。
+- 抽帧时先抽「目标张数 × `video.frame_candidates`（默认 2）」个候选再筛选，落选的临时文件会立即清掉。
+- 顺带把 Pillow 已弃用的 `Image.getdata()` 换成 `tobytes()`，避免将来 Pillow 14 报错。
+
+### 多帧拼成一张带时间戳的卡片
+
+- 新增 `media/sheet.py`：把 4~6 个画面铺进一张 16:9 卡片，每格左上角标「序号 mm:ss」。
+- `video.frame_compose`：`auto`（默认，4 张以上才拼）/ `single`（永远单独发）/ `sheet`（一律拼）。
+- 一张卡片比连发五六张图清爽，而且文字里说「第 3 张」时对方能直接对上。
+
+### 评论区先提纯
+
+- `media/comments.py` 新增 `is_low_value()`：纯表情、纯 @、纯符号、广告引流、单字重复（水印/进度条读数）直接丢掉，不再占用上下文额度。
+- 过滤数量记在调试日志里——「评论区没人说话」有时其实是被筛干净了。
+
+### 插件状态页
+
+- 新增 `views/overview/`（`index.html` + `app.js` + `style.css`）与 `handlers/page_api.py`：在 AstrBot WebUI 的插件详情页里能直接看到下次浏览时间、今日分享用量、观看记忆与知识条数、它最近在意什么、想刷列表、平台健康状态、画面与 OCR 配置。
+- 只注册一个只读接口 `/astrbot_plugin_community_radar/overview`；老版本 AstrBot 没有 `astrbot.api.web` 时自动跳过，不影响插件加载。
+- AstrBot 缺少某个服务时页面照样能渲染，不会白屏。
+
+### 工程
+
+- 新增 GitHub Actions CI：编译全部模块、pyflakes、schema JSON 校验、插件规范自检、配置键审计、离线测试。
+- 文档里不再罗列他项目的名字与链接。
+
+- 回归：`python -m unittest discover -s tests -q`，共 333 个用例，全部离线通过。
+
 ## v0.18.2
 
 按实际使用反馈修三处，都是「看着像人、但细节露馅」的地方。
@@ -66,14 +111,6 @@ v0.18.0 把分享风格改成聊天式后，提示词允许「链接自然带在
 - **感想在翻评论区之前就写完了**：为了决定「要不要提前收手」，循环里边看边调 `review` 并把结果存在条目上，后面「回味」阶段看到已有结果就跳过——这条内容的感想因此永远看不到评论。现在收手判断改用新增的 `Cognition.verdict()`（只问「还看得下去吗」，提示词更短、不落库），完整感想统一留到评论区之后，顺序与「看完 → 翻评论 → 回想」一致。
 
 另外清掉三处未使用的导入，并给运行时冒烟检查补上新增加的处理器（登录、填 cookie、待看、知识、平台受阻提示）。
-
-### 借鉴开源项目
-
-设计参考了三个同类项目，均按本插件的三平台结构重写，未复制其源码：
-
-- [QKqiuku/astrbot_plugin_bili_watch](https://github.com/QKqiuku/astrbot_plugin_bili_watch)（MIT）的**官方快照拼版**思路：B 站为每个视频预先生成缩略图网格与时间轴，覆盖全片且无需下载视频。据此新增 `media/storyboard.py`，作为 B 站取画面的首选路径，ffmpeg 抽帧降为后备。实测一个 213 秒的视频拿到 32 帧、覆盖到 211 秒，8 帧裁切后每张约 20KB。
-- [chenluQwQ/astrbot_plugin_bilibili_ai_bot](https://github.com/chenluQwQ/astrbot_plugin_bilibili_ai_bot)（AGPL-3.0，仅参考设计）的**节奏控制**：两条内容之间随机停顿，看完一条后可能「觉得够了」提前收手。据此新增 `services/pacing.py` 与四个节奏配置项。
-- [SodaCodeSave/astrbot_plugin_biliread](https://github.com/SodaCodeSave/astrbot_plugin_biliread)（AGPL-3.0，仅参考设计）的「字幕优先、无字幕明说」处理，与本插件既有行为一致，未额外改动。
 
 ### 模块划分
 
@@ -181,15 +218,6 @@ core/compat.py        AstrBot 4.30 导入路径兼容
 - `browse.platforms` 增加 `tieba` 选项并补 `options` 下拉，避免用户手填出错。
 - 贴吧候选直接由 `clients.tieba.build_evidence()` 构造证据，不经过视频理解；其余平台路径不变。
 - `TiebaAdapter` 接入统一只读适配器，跨插件 `radar_explore_api` 可按话题检索贴吧。
-
-### 新增平台接入参考
-
-调研了以下开源实现（仅参考设计，未复制代码）：
-
-- [lumina37/aiotieba](https://github.com/lumina37/aiotieba)（Unlicense）：贴吧异步客户端，本模块的签名算法、protobuf 字段编号与接口域名均以其公开实现为参考。
-- [NanmiCoder/MediaCrawler](https://github.com/NanmiCoder/MediaCrawler)：贴吧网页端签名与「Python 直连会被拦、需浏览器上下文」的结论，解释了为何走移动端接口。
-- [Qfxaile/astrbot_plugin_multi_parser](https://github.com/Qfxaile/astrbot_plugin_multi_parser)：AstrBot 生态里同时支持贴吧与小红书的解析插件，其贴吧实现依赖网页版 HTML 结构，未登录时同样受限，印证了当前取舍。
-- 小红书方面，同类插件普遍需要登录态与 `x-s` 签名，暂不接入；`media/comments.py` 的归一结构与平台无关，后续接入可直接复用。
 
 ### 兼容
 
@@ -345,7 +373,6 @@ core/compat.py        AstrBot 4.30 导入路径兼容
 - 容器媒体检查：`python tests/runtime_smoke.py`，仅在独立进程注册插件工具并处理合成测试视频，不启动后台任务。
 - 测试环境与线上目录分离，部署前保留代码、配置和JSON状态备份。
 
-参考项目 `chenluQwQ/astrbot_plugin_bilibili_ai_bot` 的观看记忆、兴趣证据、定向补看和结果未知处理思路，按社区雷达的三平台结构独立实现；未移植其整个运行时。
 
 
 ## v0.14.0

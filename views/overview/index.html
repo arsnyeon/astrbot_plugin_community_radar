@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>社区雷达 · 状态总览</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>社区雷达</h1>
+      <div class="sub" id="meta">正在读取…</div>
+      <button id="refresh" type="button">刷新</button>
+    </header>
+
+    <section class="cards" id="cards"></section>
+
+    <section>
+      <h2>最近一轮</h2>
+      <div id="last" class="panel">—</div>
+    </section>
+
+    <section>
+      <h2>它最近在意什么</h2>
+      <div id="interests" class="panel">—</div>
+    </section>
+
+    <section>
+      <h2>想刷列表</h2>
+      <div id="watchlist" class="panel">—</div>
+    </section>
+
+    <section>
+      <h2>平台状态</h2>
+      <div id="health" class="panel">—</div>
+    </section>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

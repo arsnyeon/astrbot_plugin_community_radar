@@ -8,7 +8,7 @@
   避免为此引入 protobuf、aiohttp 等额外依赖。
 
 本模块只做读取与结构归一，不处理登录、不发帖、不回复。
-签名算法与字段编号参考 aiotieba（Unlicense）与 MediaCrawler 的公开实现。
+签名算法与字段编号按接口实际抓包整理。
 """
 
 from __future__ import annotations

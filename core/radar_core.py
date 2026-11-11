@@ -345,6 +345,26 @@ class RadarStore:
                                (key, time.time() - 7 * 86400)).fetchone()
         return json.loads(row[0]) if row else None
 
+    def stats(self) -> dict:
+        """台账规模与今日用量，供状态命令与插件页面使用。
+
+        Returns:
+            含 ``memory`` / ``events`` / ``share_today`` 的字典；查询失败时缺项省略。
+        """
+        out: dict = {}
+        try:
+            out["memory"] = int(self.db.execute(
+                "SELECT COUNT(*) AS n FROM memory").fetchone()["n"])
+            out["events"] = int(self.db.execute(
+                "SELECT COUNT(*) AS n FROM events").fetchone()["n"])
+            midnight = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
+            out["share_today"] = int(self.db.execute(
+                "SELECT COUNT(*) AS n FROM events WHERE kind='share' AND at>=?"
+                " AND state IN ('pending','success','unknown')", (midnight,)).fetchone()["n"])
+        except Exception as exc:  # noqa: BLE001 - 页面展示不该因统计失败报错
+            logger.debug(f"[CommunityRadar] 台账统计失败（{type(exc).__name__}）")
+        return out
+
     def compact(self):
         """永久保留内容 ID，只压缩旧记录明细，不把元数据提升为「看过」。"""
         for row in self.db.execute("SELECT id,result FROM memory WHERE updated<?",

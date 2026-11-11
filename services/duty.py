@@ -38,6 +38,7 @@ from ..clients.tieba import build_evidence as tieba_evidence
 from ..core.radar_session import remember as remember_session
 from ..services import followup as followup_state
 from ..media.media_selection import select_images
+from ..media import sheet
 from ..media.media_cache import MediaCache
 
 DEFAULT_PERSONA = (
@@ -422,6 +423,15 @@ class BrowseDuty:
                 media = await select_images(self.plugin, picked or understood,
                                             int(number(share_cfg, 'max_images', 5, 0, 6)))
                 part_media = None
+            # 图多的时候拼成一张卡片：一张图看全，还带时间戳。
+            compose = str((self.plugin.config.get("video") or {}).get("frame_compose")
+                          or "auto").lower()
+            want_sheet = compose == "sheet" or (compose == "auto" and len(media) >= 4)
+            if media and want_sheet:
+                merged = self._sheet_media(media)
+                if merged:
+                    media = [merged]
+                    part_media = None
             await self._send(text, cfg,
                              image_url='' if (media or part_media) else self.autopilot.pick_image(cfg, picked),
                              context_items=picked or understood, selected_media=media,
@@ -1481,6 +1491,43 @@ class BrowseDuty:
             if cover is not None:
                 bubbles[-1].append(cover)
         return bubbles
+
+    def _sheet_media(self, media: list[dict]) -> dict | None:
+        """把多张画面拼成一张带时间戳的卡片，并存回媒体缓存。
+
+        图多的时候一张卡片比连发五六张图清爽，而且每格带秒数，文字里说
+        「第 3 张」也能对上。
+
+        Args:
+            media: ``select_images`` 或模型逐句指定的画面列表。
+
+        Returns:
+            缓存里的卡片媒体条目；不足两张或合成失败时返回 ``None``。
+        """
+        if len(media) < 2:
+            return None
+        cache = MediaCache(self.plugin.radar_store.directory)
+        items: list[tuple[float, bytes]] = []
+        for item in media[:6]:
+            if not isinstance(item, dict):
+                continue
+            data = cache.read(item.get("media_id"))
+            if not data:
+                continue
+            try:
+                stamp = float(item.get("timestamp") or 0)
+            except (TypeError, ValueError):
+                stamp = 0.0
+            items.append((stamp, data))
+        if len(items) < 2:
+            return None
+        blob = sheet.compose(items)
+        if not blob:
+            return None
+        merged = cache.put(blob, kind="sheet", timestamp=None)
+        if merged:
+            logger.info("[CommunityRadar] 已把 %s 张画面拼成一张卡片", len(items))
+        return merged
 
     async def _send(self, text, cfg, *, image_url="", context_items=None, selected_media=None, image_layout="", part_media=None):
         share_cfg = self.plugin.config.get("share") or {}

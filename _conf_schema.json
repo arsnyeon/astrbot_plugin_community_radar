@@ -641,6 +641,19 @@
         "options": ["ffmpeg", "storyboard"],
         "default": "ffmpeg"
       },
+      "frame_compose": {
+        "type": "string",
+        "description": "多张画面怎么发",
+        "hint": "auto = 4 张以上拼成一张带时间戳的卡片，少于 4 张就单独发（默认）；single = 永远单独发；sheet = 一律拼成一张。",
+        "options": ["auto", "single", "sheet"],
+        "default": "auto"
+      },
+      "frame_candidates": {
+        "type": "int",
+        "description": "候选帧倍数",
+        "hint": "抽帧时先抽「目标张数 × 这个倍数」，再按画面差异挑出不重复的几张。1 表示不筛（纯均匀采样）。默认 2。",
+        "default": 2
+      },
       "frame_width": {
         "type": "int",
         "description": "画面宽度（像素）",
@@ -691,8 +704,38 @@
         "default": 180,
         "hint": "没有字幕时按180秒分段转写；超过预算明确标记。"
       },
-      "timeout_seconds": {
+      "ocr_subtitles": {
+        "type": "bool",
+        "description": "读画面里的硬字幕",
+        "hint": "很多 B 站视频没有官方字幕、只有压在画面上的硬字幕。开启后会裁底部字幕条做 OCR，拿到真实台词。需要另装 rapidocr_onnxruntime（可选依赖），装不上会自动跳过。",
+        "default": false
+      },
+      "ocr_fps": {
         "type": "int",
+        "description": "硬字幕采样帧率",
+        "hint": "1~4，默认 1。越高越不容易漏台词，但 OCR 开销线性上升。",
+        "default": 1
+      },
+      "ocr_max_frames": {
+        "type": "int",
+        "description": "硬字幕最多看几帧",
+        "hint": "默认 60，最多 200。决定能覆盖多长：1fps 下 60 帧约等于前 60 秒。",
+        "default": 60
+      },
+      "ocr_region": {
+        "type": "string",
+        "description": "字幕在画面哪一侧",
+        "hint": "bottom = 底部 32%（绝大多数视频）；top = 顶部 35%。",
+        "options": ["bottom", "top"],
+        "default": "bottom"
+      },
+      "ocr_time_budget": {
+        "type": "int",
+        "description": "硬字幕 OCR 时间预算（秒）",
+        "hint": "默认 120。超时就放弃 OCR，改用简介与画面描述，不拖垮整轮。",
+        "default": 120
+      },
+      "timeout_seconds": {        "type": "int",
         "description": "单条内容时间预算（秒）",
         "default": 150
       }

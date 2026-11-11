@@ -1,0 +1,82 @@
+:root {
+  --bg: #16181d;
+  --panel: #1e2128;
+  --line: #2c313a;
+  --text: #e6e8ec;
+  --muted: #9aa3b2;
+  --accent: #ffd75e;
+  --ok: #4ec9a4;
+  --warn: #f0a35e;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 20px;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.6 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 15px; margin: 22px 0 8px; color: var(--muted); font-weight: 600; }
+.sub { color: var(--muted); font-size: 12px; }
+
+button {
+  margin-left: auto;
+  padding: 5px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); color: var(--accent); }
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.card .k { color: var(--muted); font-size: 12px; }
+.card .v { font-size: 20px; font-weight: 600; margin-top: 4px; }
+.card .v.small { font-size: 14px; font-weight: 500; }
+.card .hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.row { display: flex; gap: 8px; align-items: baseline; }
+.row + .row { margin-top: 6px; }
+.tag {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1px 7px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.dim { color: var(--muted); }

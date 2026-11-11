@@ -4,7 +4,7 @@
 会停几十秒。本模块只负责回答「这一轮看几条」「两条之间停多久」，不关心
 内容本身，便于单独测试与调整。
 
-参考设计：chenluQwQ/astrbot_plugin_bilibili_ai_bot 的主动看片节奏。
+设计要点：两条内容之间随机停顿，看完一条后允许「觉得够了」提前收手。
 """
 
 from __future__ import annotations

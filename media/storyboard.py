@@ -7,7 +7,7 @@ B 站为每个视频提供了预先生成的缩略图拼版：一张大图按网
 本模块只负责「取得画面」。对画面的理解、以及它是否足以支撑结论，由
 ``video_watch`` 决定；这里不调用模型。
 
-参考实现：QKqiuku/astrbot_plugin_bili_watch 的 videoshot 思路。
+思路：官方 videoshot 接口已给出覆盖全片的缩略图网格与时间轴，直接裁切即可，无需下载视频。
 """
 
 from __future__ import annotations

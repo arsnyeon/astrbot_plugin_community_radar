@@ -15,15 +15,70 @@ def _clip(text: Any, limit: int = 120) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()[:limit]
 
 
+#: 明显是广告或引流的词。命中就不进上下文，免得把推广当成人话。
+_AD_WORDS = (
+    "加微", "加v", "加V", "私信我", "代练", "代刷", "刷单", "优惠券",
+    "扫码", "点击链接", "下载app", "下载APP", "领红包", "日赚", "兼职",
+)
+
+#: 纯表情 / 纯标记 / 纯符号的评论没有信息量。
+_EMPTY_LIKE = re.compile(
+    r"^(?:[\s\W_]*|\[[^\]]{1,6}\]|哈{1,}|呵{1,}|草{1,}|6{2,}|[?？!！。.~～]{1,})$"
+)
+
+
+def is_low_value(text: str) -> bool:
+    """判断一条评论是不是没有信息量。
+
+    群里接话、评论区「别人怎么说」都靠这些文本，纯表情、纯 @、广告会把
+    有限的上下文额度占满，因此先筛掉。
+
+    Args:
+        text: 已去空白的评论正文。
+
+    Returns:
+        是否应当丢弃。
+    """
+    body = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(body) < 2:
+        return True
+    if _EMPTY_LIKE.match(body):
+        return True
+    # 纯 @ 某人
+    if re.fullmatch(r"(?:@\S+\s*)+", body):
+        return True
+    if any(word in body.lower() for word in _AD_WORDS):
+        return True
+    # 只剩标点与表情，没有任何实义字符
+    if not re.search(r"[\u4e00-\u9fa5A-Za-z0-9]", body):
+        return True
+    return False
+
+
 def normalize_comments(raw: list[dict] | None, limit: int = 8) -> list[dict]:
-    """把三个平台各自返回的评论结构归一成同一种形态。"""
+    """把三个平台各自返回的评论结构归一成同一种形态。
+
+    低质评论（纯表情、纯 @、广告、超短）在这里直接丢掉，并统计数量便于排查：
+    有时「评论区没人说话」其实是被过滤干净了。
+
+    Args:
+        raw: 各平台原始评论。
+        limit: 最多保留几条。
+
+    Returns:
+        按点赞降序的评论列表。
+    """
     out: list[dict] = []
     seen: set[str] = set()
+    dropped = 0
     for item in raw or []:
         if not isinstance(item, dict):
             continue
         text = _clip(item.get("text") or item.get("content"))
         if not text or text in seen:
+            continue
+        if is_low_value(text):
+            dropped += 1
             continue
         seen.add(text)
         try:
@@ -36,6 +91,8 @@ def normalize_comments(raw: list[dict] | None, limit: int = 8) -> list[dict]:
             "likes": likes,
             "replies": int(item.get("replies") or 0) if str(item.get("replies") or "").isdigit() else 0,
         })
+    if dropped:
+        logger.debug(f"[CommunityRadar] 过滤掉 {dropped} 条无信息量评论")
     out.sort(key=lambda x: x["likes"], reverse=True)
     return out[:max(1, min(int(limit or 8), 20))]
 

@@ -42,9 +42,10 @@ from .handlers.hooks import HooksMixin
 from .handlers.commands import CommandsMixin
 from .handlers.tools import ToolsMixin
 from .handlers.helpers import HelpersMixin
+from .handlers.page_api import PageMixin
 
 
-class CommunityRadarPlugin(HooksMixin, CommandsMixin, ToolsMixin, HelpersMixin, Star):
+class CommunityRadarPlugin(HooksMixin, CommandsMixin, ToolsMixin, PageMixin, HelpersMixin, Star):
     """自己逛 B 站 / 小黑盒 / 贴吧 / 抖音，看得懂内容，会带图分享。
 
     常用命令：``/社区雷达``（状态）、``/社区雷达 逛``（立刻逛一轮）、
@@ -79,6 +80,7 @@ class CommunityRadarPlugin(HooksMixin, CommandsMixin, ToolsMixin, HelpersMixin, 
         self.link_peek = LinkPeek(self)
         self.video_watch = VideoWatch(self)
         self._peek_last: dict[str, float] = {}
+        self._register_page_api()
         self._owner_warned = False
 
     async def initialize(self):

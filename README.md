@@ -46,11 +46,11 @@
 ## 主要能力
 
 - **自主浏览**：在配置的时间区间里随机挑时机，按人格、近期兴趣和平台权重决定这轮逛哪儿、搜什么；有免打扰时段。
-- **真正看懂内容**：B 站字幕优先，没字幕就用官方快照拼版看画面（不需要下载视频）；小黑盒读正文与配图、内嵌视频抽帧；贴吧读首帖；抖音走分享页或浏览器。
+- **真正看懂内容**：B 站字幕优先；没有官方字幕时可选读画面里的硬字幕（OCR），再不行才看画面；小黑盒读正文与配图、内嵌视频抽帧；贴吧读首帖；抖音走分享页或浏览器。
 - **按人的顺序来**：先把这一轮想看的都看完 → 再统一翻评论区 → 最后一起回味。感想不会在翻评论之前就写完。
 - **拟人节奏**：两条内容之间随机停 20~90 秒；看完一条可能「觉得够了」提前收手；只有真有话说时才发。
 - **说人话的分享**：默认 `chat` 风格，先概括内容、再说评论区、再说自己怎么看；明确要求提到具体画面/字幕/评论，禁止「挺有意思」这类空话。
-- **带图且不堆图**：从实际取得的画面里挑 3~6 张它觉得有信息量的，分散到不同消息，不会一条塞三张。
+- **带图且不堆图**：从实际取得的画面里挑 3~6 张它觉得有信息量的（先按画面差异去重，不是均匀乱抽），分散到不同消息；张数多时拼成一张带时间戳的卡片。
 - **群里会接话**：别人接着聊它分享的东西、又没 @ 它时，它自己挑着回一句；有次数与概率上限，不刷屏。
 - **自己的「想刷列表」**：聊天里别人发的链接、或口头提到的作品名，只要它感兴趣就记下来，下次优先去看。
 - **长期积累**：观看记忆（会随时间压缩）+ 兴趣证据（会衰减）+ 知识条目（梗、术语、经验，不会淡忘），可选同步进 AstrBot 知识库走 RAG。
@@ -75,7 +75,8 @@ https://github.com/arsnyeon/astrbot_plugin_community_radar
 
 | 用途 | 需要 |
 |---|---|
-| 视频抽帧（B 站快照不可用时、小黑盒内嵌视频） | 系统 `ffmpeg` |
+| 视频抽帧（默认取画面方式） | 系统 `ffmpeg` |
+| 读画面里的硬字幕 | `pip install rapidocr_onnxruntime`（可选，CPU 推理） |
 | 抖音推荐流 / 点赞评论 | Playwright + Chromium（见 `scripts/install_browser.sh`），登录，建议用小号 |
 | B 站字幕与写操作 | B 站 Cookie，或用 `/雷达登录 bili` 扫码 |
 | 小黑盒正文与写操作 | 小黑盒 Cookie，或用 `/雷达填cookie heybox <内容>` |
@@ -120,6 +121,8 @@ https://github.com/arsnyeon/astrbot_plugin_community_radar
 | `share.segment_max` | 最多分几条，默认 6 |
 | `share.min_score_to_share` | 至少多喜欢才值得分享，默认 6 |
 | `video.frame_source` | `ffmpeg`（抽真帧，默认）/ `storyboard`（官方缩略图，糊） |
+| `video.frame_compose` | `auto`（4 张以上拼成一张卡片）/ `single` / `sheet` |
+| `video.ocr_subtitles` | 读画面里的硬字幕（默认关，需装 rapidocr） |
 | `share.image_layout` | `auto`（它自己决定）/ `together` / `separate` / `mixed` |
 | `share.dry_run` | 试运行：照常成稿但不投递 |
 | `share.followup_groups` | 群里有人接话时自己回一句 |
@@ -218,12 +221,6 @@ https://github.com/arsnyeon/astrbot_plugin_community_radar
 ## 更新
 
 逐版本变更见 [CHANGELOG.md](CHANGELOG.md)。
-
-## 致谢
-
-- 观看记忆、兴趣证据、定向补看与「结果未知不重试」的处理思路参考 [chenluQwQ/astrbot_plugin_bilibili_ai_bot](https://github.com/chenluQwQ/astrbot_plugin_bilibili_ai_bot)，按本插件的多平台结构独立实现。
-- 贴吧接口的签名方式、protobuf 字段编号与域名取法参考 [lumina37/aiotieba](https://github.com/lumina37/aiotieba)（Unlicense）；[NanmiCoder/MediaCrawler](https://github.com/NanmiCoder/MediaCrawler) 关于网页端被拦、需要浏览器上下文的结论帮助确认了走移动端接口的方向。
-- 节奏控制的「看完一条会收手」参考 [chenluQwQ](https://github.com/chenluQwQ) 与 [SodaCodeSave/astrbot_plugin_biliread](https://github.com/SodaCodeSave/astrbot_plugin_biliread) 的公开实现。
 
 ## License
 

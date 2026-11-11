@@ -19,7 +19,7 @@ from astrbot.api import logger
 from ..clients.bili import UA as BILI_UA, find_video_id
 from ..clients.tieba import TiebaLoginRequired, post_text as tieba_post_text
 from ..core.radar_core import KeyLocks, number, verified
-from ..media import storyboard
+from ..media import frames, storyboard, subtitle_ocr
 from ..media.media_cache import MediaCache
 
 
@@ -211,12 +211,27 @@ class VideoWatch:
                         bvid, cid, str(info.get("aid") or ""))
                 except Exception:
                     pass
+            # 没有官方字幕时，试着读画面里的硬字幕；读到了就是最实在的台词。
+            ocr_used = False
+            if not transcript and sources.get("video"):
+                ocr_lines = await subtitle_ocr.extract(
+                    str(sources.get("video") or ""), duration, cfg,
+                    referer="https://www.bilibili.com/")
+                if ocr_lines:
+                    transcript = ocr_lines
+                    ocr_used = True
             result = await self._understand(
                 title=info.get("title") or "", author=info.get("author") or "",
                 description=str(info.get("desc") or ""), duration=duration,
                 transcript=transcript, sources=sources, cfg=cfg,
                 referer="https://www.bilibili.com/", prefetched_frames=frames,
             )
+            if ocr_used:
+                note = "字幕由画面 OCR 得到，可能有识别错误"
+                result.setdefault("uncertainties", []).append(note)
+                result["digest"] = str(result.get("digest") or "") + "\n局限：" + note
+                if verified(result) and result.get("status") == "analyzed":
+                    result["status"] = "partial"
             result["author_id"] = str(info.get("mid") or "")
             if int(info.get("parts") or 0) > 1:
                 note = f"该投稿有{info['parts']}个分P，本次只检查第1个分P"
@@ -390,10 +405,14 @@ class VideoWatch:
             try:
                 async with asyncio.timeout(min(90, self._remaining(cfg) - 5)):
                     async with self._media_slots:
-                        pairs = await self._extract(sources["video"], duration,
-                                                    frame_budget(duration, number(cfg, "frames", 6, 1, 12)),
+                        budget = frame_budget(duration, number(cfg, "frames", 6, 1, 12))
+                        # 多抽一些候选再按画面差异筛选，避免拿到一串近似帧。
+                        cand = min(30, max(budget, budget * int(
+                            number(cfg, "frame_candidates", 2, 1, 5))))
+                        pairs = await self._extract(sources["video"], duration, budget,
                                                     referer, start, end,
-                                                    int(number(cfg, "frame_width", 854, 480, 1280)))
+                                                    int(number(cfg, "frame_width", 854, 480, 1280)),
+                                                    candidates=cand)
             except MediaToolMissing:
                 uncertainty.append("未找到 ffmpeg，无法抽帧（装上 ffmpeg 才能看画面）")
             except (TimeoutError, OSError):
@@ -485,11 +504,31 @@ class VideoWatch:
             return summary or combined[:cap//2] + "\n（中间摘要省略）\n" + combined[-cap//2:]
         return combined
 
-    async def _extract(self, url, duration, count, referer="", start=0, end=None, width=854):
+    async def _extract(self, url, duration, count, referer="", start=0, end=None, width=854,
+                       candidates=None):
+        """抽帧并按画面差异筛掉重复。
+
+        先按 ``candidates`` 的数量多抽一些，再挑彼此差异最大的 ``count`` 张：
+        均匀采样容易连着抽到同一镜头的近似画面，既浪费上下文也不好看。
+
+        Args:
+            url: 视频直链。
+            duration: 总时长。
+            count: 最终需要几张。
+            referer: 请求头 Referer。
+            start: 起始秒。
+            end: 结束秒。
+            width: 输出宽度。
+            candidates: 候选数量，默认取 ``count``；筛完仍返回至多 ``count`` 张。
+
+        Returns:
+            ``(秒数, 本地路径)`` 列表，按时间升序。
+        """
+        take = max(1, int(candidates or count))
         pairs = []
         headers = f"User-Agent: {BILI_UA}\r\n" + (f"Referer: {referer}\r\n" if referer else "")
         try:
-            for timestamp in sample_times(duration, count, start, end):
+            for timestamp in sample_times(duration, take, start, end):
                 fd, path = tempfile.mkstemp(suffix=".jpg", prefix="radar_frame_")
                 os.close(fd)
                 keep = False
@@ -507,6 +546,14 @@ class VideoWatch:
                 finally:
                     if not keep:
                         self._unlink(path)
+            if len(pairs) > count:
+                chosen = frames.pick_distinct(pairs, count)
+                dropped = [item for item in pairs if item not in chosen]
+                for _, path in dropped:
+                    self._unlink(path)
+                logger.info("[CommunityRadar] 抽帧去重：%s → %s（%s）",
+                             len(pairs), len(chosen), frames.describe(chosen))
+                return chosen
             return pairs
         except BaseException:
             for _, path in pairs:

@@ -590,7 +590,7 @@ class DouyinBrowser:
 
             with Image.open(path) as im:
                 small = im.convert("L").resize((8, 8))
-                px = list(small.getdata())
+                px = list(small.tobytes())
             avg = sum(px) / len(px)
             return "".join("1" if p > avg else "0" for p in px)
         except Exception:  # noqa: BLE001
