@@ -248,6 +248,36 @@ class MediaDeliveryTests(unittest.TestCase):
         self.assertIn("https://www.bilibili.com/video/BV1Fbpt6qEPq", text)
 
 
+class JsonGuardTests(unittest.TestCase):
+    """投递前的最后一道防线：JSON 残片一律不发。"""
+
+    def _run(self, parts):
+        import asyncio
+        import tempfile
+
+        directory = Path(tempfile.mkdtemp(prefix="radar_json_"))
+        plugin = Plugin({"share": {"enable": True, "segment": True, "segment_delay": 0}},
+                        directory=str(directory))
+        duty = BrowseDuty(plugin)
+        ok = asyncio.run(duty._send(parts, {"targets": ["x:FriendMessage:1"]}))
+        return ok, plugin
+
+    def test_json_fragment_is_dropped(self):
+        ok, plugin = self._run(['{"messages":["a"]}', "正常的一句话"])
+        self.assertTrue(ok)
+        self.assertEqual([c[0].text for _, c in plugin.sent], ["正常的一句话"])
+
+    def test_all_json_sends_nothing(self):
+        ok, plugin = self._run(['{"messages":[]}', '{"pick":1}'])
+        self.assertFalse(ok)
+        self.assertEqual(plugin.sent, [])
+
+    def test_normal_text_passes_through(self):
+        ok, plugin = self._run(["第一句", "第二句"])
+        self.assertTrue(ok)
+        self.assertEqual(len(plugin.sent), 2)
+
+
 class MessageParseTests(unittest.TestCase):
     """模型可以逐句指定画面，解析后必须与文字对齐。"""
 

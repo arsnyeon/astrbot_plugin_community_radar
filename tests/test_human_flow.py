@@ -491,6 +491,66 @@ class FrameBudgetTests(unittest.TestCase):
         self.assertEqual(video.frame_budget(600, 0), 0)
 
 
+class BrokenSummaryTests(unittest.IsolatedAsyncioTestCase):
+    """模型吐出坏 JSON 时，绝不能把原文当消息发出去。
+
+    回归：真实事故里模型输出 `{"messages":[...]},{"pick":1,...}` 这种
+    「两段 JSON 拼在一起」的结构，解析失败后兜底逻辑把原文按句子切开，
+    于是连着发了四条花括号。
+    """
+
+    BROKEN = (
+        '{"messages":["贴吧那贴说2077平均每日在线才5万","评论区那个铁血神弩更离谱",'
+        '"这不巧了吗我这两天正好在查J3455功耗","我的看法是买卡还是得看自己到底玩啥"]},'
+        '{"pick": 1, "image_layout": "mixed", "skip": false}'
+    )
+
+    def duty(self, raw: str):
+        async def ask(*a, **k):
+            return raw
+
+        plugin = NS(config={"share": {"style": "chat"}},
+                    duty=NS(_bot_persona=AsyncMock(return_value="")),
+                    radar_ai=NS(ask=ask))
+        return duty_mod.BrowseDuty(plugin, Path(tempfile.mkdtemp(prefix="radar_broken_")))
+
+    def bili(self):
+        return [{"bvid": "BV1xx411c7mD", "title": "标题", "_link": "https://x/y"}]
+
+    async def test_salvages_messages_from_broken_json(self):
+        parts, _picked, _layout, media = await self.duty(self.BROKEN)._summarize(
+            self.bili(), [], {}, [])
+        self.assertEqual(len(parts), 4, "应当把 messages 数组抢救出来")
+        self.assertFalse(any("{" in p or "}" in p for p in parts), "不能带花括号")
+        self.assertFalse(any("image_layout" in p for p in parts))
+        self.assertEqual(media, [None] * len(parts))
+
+    async def test_unsalvageable_json_sends_nothing(self):
+        duty = self.duty('{"messages": [坏掉了')
+        parts, _p, _l, _m = await duty._summarize(self.bili(), [], {}, [])
+        self.assertEqual(parts, [], "坏到救不回来就这轮不发")
+
+    async def test_plain_prose_still_falls_back(self):
+        duty = self.duty("这个视频挺有意思的。不过也就那样吧。")
+        parts, _p, _l, _m = await duty._summarize(self.bili(), [], {}, [])
+        self.assertEqual(len(parts), 2, "纯文本输出仍按句切分")
+        self.assertTrue(all("{" not in p for p in parts))
+
+    def test_looks_like_json_detection(self):
+        detect = duty_mod.BrowseDuty._looks_like_json
+        self.assertTrue(detect('{"messages":[]}'))
+        self.assertTrue(detect('["a","b"]'))
+        self.assertTrue(detect('前面的话 "messages": []'))
+        self.assertFalse(detect("这是一句普通的话"))
+
+    def test_balanced_slice_handles_braces_in_strings(self):
+        text = '{"a":"带}括号的字符串","b":1}'
+        self.assertEqual(duty_mod.BrowseDuty._balanced_slice(text, 0), text)
+
+    def test_balanced_slice_unbalanced_returns_empty(self):
+        self.assertEqual(duty_mod.BrowseDuty._balanced_slice('{"a":1', 0), "")
+
+
 class PageOverviewTests(unittest.TestCase):
     """插件页面的数据汇总必须容错：任一服务缺失也不能抛。"""
 

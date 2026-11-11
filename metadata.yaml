@@ -2,7 +2,7 @@ name: astrbot_plugin_community_radar
 display_name: 社区雷达
 short_desc: 自己逛 B 站 / 小黑盒 / 贴吧 / 抖音，看得懂视频图文，会翻评论区再带图分享。
 desc: "让机器人像人一样逛社区：按人格与聊天话题决定逛哪、看什么，读完字幕、画面、正文与评论区才形成感想，觉得有意思才分条分享；聊天里提到的内容会记成「想刷列表」，看过的内容、兴趣与梗会长期沉淀；群里有人接着聊时会自己回一句。读取免登录，写操作默认试运行并带每日额度与最小间隔。"
-version: 0.19.0
+version: 0.19.1
 author: arsnyeon
 repo: https://github.com/arsnyeon/astrbot_plugin_community_radar
 astrbot_version: ">=4.29,<5"

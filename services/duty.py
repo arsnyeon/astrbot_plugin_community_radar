@@ -1041,6 +1041,105 @@ class BrowseDuty:
                 lines.append(f"- {x.get('rank')}. {x.get('title')}{via(x)}{hot_part} {x.get('url')}")
         return "\n".join(lines)
 
+    @staticmethod
+    def _balanced_slice(text: str, start: int) -> str:
+        """从 ``start`` 处的括号开始，取到与之匹配的右括号。
+
+        会跳过字符串内部的括号，因此 ``{"a":"[}"}`` 这种也能正确配对。
+
+        Args:
+            text: 原始文本。
+            start: 起始位置，必须指向 ``{`` 或 ``[``。
+
+        Returns:
+            括号内的完整片段；配对失败时返回空串。
+        """
+        if start < 0 or start >= len(text) or text[start] not in "{[":
+            return ""
+        opener = text[start]
+        closer = "}" if opener == "{" else "]"
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == opener:
+                depth += 1
+            elif char == closer:
+                depth -= 1
+                if depth == 0:
+                    return text[start:index + 1]
+        return ""
+
+    @classmethod
+    def _salvage_summary(cls, raw: str) -> dict:
+        """从结构损坏的模型输出里抢救分享内容。
+
+        模型偶尔会吐出「两段 JSON 拼在一起」这类坏结构。这时不能直接把原文发出去
+        （那会变成一串 JSON 垃圾），先尽量把 ``messages`` 数组捞回来；捞不到就返回
+        空字典，由调用方决定「这轮不发」。
+
+        Args:
+            raw: 模型原始输出。
+
+        Returns:
+            含 ``messages`` 的字典；抢救失败时为空。
+        """
+        text = str(raw or "").strip()
+        if not text:
+            return {}
+        for index, char in enumerate(text):
+            if char not in "{[":
+                continue
+            snippet = cls._balanced_slice(text, index)
+            if not snippet:
+                continue
+            try:
+                value = json.loads(snippet)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(value, dict) and isinstance(value.get("messages"), list):
+                return value
+            if isinstance(value, list) and value and all(
+                    isinstance(item, (str, dict)) for item in value):
+                return {"messages": value}
+        # 兜底：只找 messages 后面那个数组
+        key = text.find('"messages"')
+        if key >= 0:
+            bracket = text.find("[", key)
+            snippet = cls._balanced_slice(text, bracket)
+            if snippet:
+                try:
+                    value = json.loads(snippet)
+                except (ValueError, TypeError):
+                    value = None
+                if isinstance(value, list):
+                    return {"messages": value}
+        return {}
+
+    @staticmethod
+    def _looks_like_json(raw: str) -> bool:
+        """判断模型输出是不是（坏掉的）JSON 结构。
+
+        这类内容绝不能当成聊天内容发出去——真发出去就是一屏花括号。
+        """
+        text = str(raw or "").strip()
+        if not text:
+            return False
+        if text[0] in "{[":
+            return True
+        return any(token in text for token in ('"messages"', '"pick"', '"image_layout"'))
+
     async def _summarize(
         self,
         bili: list[dict],
@@ -1173,6 +1272,12 @@ class BrowseDuty:
         try:
             raw = await self.plugin.radar_ai.ask(prompt, cfg=cfg, system=system_prompt, purpose="分享文案")
             data = parse_json(raw)
+            if not data:
+                # 结构损坏时先抢救 messages；抢救不回来就这轮不发，
+                # 绝不把 JSON 原文当成人话切开发出去。
+                data = self._salvage_summary(raw)
+                if data:
+                    logger.info("[CommunityRadar] 分享 JSON 结构损坏，已抢救回 messages")
             if data:
                 if data.get("skip") is True:
                     return [], [], "", []
@@ -1196,6 +1301,9 @@ class BrowseDuty:
                 return parts, picked, self._layout_of(data.get("image_layout")), media_map
             # 模型没按 JSON 来，就按纯文本兜底
             if "[跳过]" in raw or raw.strip("[]【】 ") == "跳过":
+                return [], [], "", []
+            if self._looks_like_json(raw):
+                logger.warning("[CommunityRadar] 分享输出是坏掉的 JSON，本轮不发送")
                 return [], [], "", []
             fallback = self._clean_parts(self._split_chat(raw.strip()),
                                          int(cfg.get("segment_max") or 3))
@@ -1537,6 +1645,15 @@ class BrowseDuty:
         targets = self.autopilot.targets(cfg, group_cfg=group_cfg)
         want_group = self.autopilot.wants_group(cfg, group_cfg)
         parts = text if isinstance(text, list) else self._split_chat(str(text or ""))
+        # 最后一道防线：任何看起来是 JSON 残片的片段都不发出去。
+        # 上游解析失败时这里能兜住，避免把花括号当人话发到群里。
+        kept = [str(part) for part in parts if not self._looks_like_json(part)]
+        if len(kept) != len(parts):
+            logger.warning("[CommunityRadar] 拦下 %s 段疑似 JSON 片段，未发送",
+                           len(parts) - len(kept))
+            parts = kept
+        if not parts:
+            return False
         parts = self._clean_parts(parts, int(share_cfg.get("segment_max") or 5))
         # 模型有时会把完整链接缩写成裸编号，先补全再进入投递与预览。
         parts = self._full_links(parts)
