@@ -428,35 +428,100 @@ class PlatformSelectionTests(unittest.TestCase):
 
 
 class CrossCheckTests(unittest.IsolatedAsyncioTestCase):
-    """刷到有感觉的内容时，会顺手去别处看一眼别人怎么说。"""
+    """「顺手去别处看看」必须是偶尔发生，而且只留真的相关的讨论。
+
+    回归：这里以前是无条件执行，于是每轮看完 B 站都要去一趟贴吧，
+    文案里还固定出现「我又去贴吧翻了翻」。
+    """
+
+    #: 概率拉到必中、冷却设为 0，把随机因素排除掉再测逻辑。
+    HIT = {"cross_check": True, "cross_check_chance": 1.0,
+           "cross_check_cooldown_minutes": 0}
+
+    def duty(self, search, **kwargs):
+        store = NS(get=lambda k, d=None: kwargs.get("store", {}).get(k, d),
+                   set=lambda k, v: kwargs.setdefault("store", {}).__setitem__(k, v))
+        plugin = NS(config={"tieba": {"enable": True}},
+                    tieba=NS(search=search), radar_store=store)
+        return duty_mod.BrowseDuty(plugin, Path(tempfile.mkdtemp(prefix="radar_cross_")))
 
     async def test_no_cross_check_when_score_low(self):
         called = []
 
         async def search(word, limit=5):
             called.append(word)
-            return [{"tid": "1", "text": "别人在聊", "forum": "独立游戏"}]
+            return [{"tid": "1", "text": "某游戏别人在聊", "forum": "独立游戏"}]
 
-        plugin = NS(config={"tieba": {"enable": True}},
-                    tieba=NS(search=search))
-        duty = duty_mod.BrowseDuty(plugin, Path(tempfile.mkdtemp(prefix="radar_cross_")))
+        duty = self.duty(search)
         items = [{"title": "标题", "_review": {"score": 2}, "_body": "正文"}]
-        await duty._cross_check(items, {})
+        await duty._cross_check(items, dict(self.HIT))
         self.assertEqual(called, [])
         self.assertNotIn("_cross", items[0])
 
     async def test_cross_check_appends_related_discussion(self):
         async def search(word, limit=5):
-            return [{"tid": "1", "text": "贴吧里有人说手感一般", "forum": "独立游戏"}]
+            return [{"tid": "1", "title": "某游戏试玩", "text": "某游戏手感一般", "forum": "独立游戏"}]
 
-        plugin = NS(config={"tieba": {"enable": True}},
-                    tieba=NS(search=search))
-        duty = duty_mod.BrowseDuty(plugin, Path(tempfile.mkdtemp(prefix="radar_cross_")))
+        duty = self.duty(search)
         item = {"title": "某游戏", "_review": {"score": 7, "keywords": ["某游戏"]}, "_body": "正文"}
-        await duty._cross_check([item], {})
+        await duty._cross_check([item], dict(self.HIT))
         self.assertIn("_cross", item)
-        self.assertIn("贴吧里有人说手感一般", item["_body"])
+        self.assertIn("某游戏手感一般", item["_body"])
         self.assertIn("不是同一条内容", item["_body"])
+
+    async def test_chance_zero_means_never(self):
+        called = []
+
+        async def search(word, limit=5):
+            called.append(word)
+            return [{"tid": "1", "title": "t", "text": "关键词在这里", "forum": "f"}]
+
+        duty = self.duty(search)
+        item = {"title": "t", "_review": {"score": 9, "keywords": ["关键词"]}, "_body": ""}
+        await duty._cross_check([item], {"cross_check": True, "cross_check_chance": 0.0})
+        self.assertEqual(called, [], "概率为 0 时一次都不该查")
+
+    async def test_cooldown_blocks_a_second_look(self):
+        called = []
+
+        async def search(word, limit=5):
+            called.append(word)
+            return [{"tid": "1", "title": "t", "text": "关键词在这里", "forum": "f"}]
+
+        state = {}
+        duty = self.duty(search, store=state)
+        item = {"title": "t", "_review": {"score": 9, "keywords": ["关键词"]}, "_body": ""}
+        cfg = dict(self.HIT, cross_check_cooldown_minutes=240)
+        await duty._cross_check([item], cfg)
+        self.assertEqual(len(called), 1)
+        # 第二条即使也有感觉，冷却期内不该再查
+        second = {"title": "t2", "_review": {"score": 9, "keywords": ["关键词"]}, "_body": ""}
+        await duty._cross_check([second], cfg)
+        self.assertEqual(len(called), 1, "冷却期内不应重复追查")
+        self.assertNotIn("_cross", second)
+
+    async def test_irrelevant_result_is_dropped(self):
+        async def search(word, limit=5):
+            return [{"tid": "1", "title": "完全无关的帖子", "text": "在聊别的东西", "forum": "f"}]
+
+        duty = self.duty(search)
+        item = {"title": "t", "_review": {"score": 9, "keywords": ["某游戏"]}, "_body": "正文"}
+        await duty._cross_check([item], dict(self.HIT))
+        self.assertNotIn("_cross", item, "没提到关键词的搜索结果不该被采用")
+
+    async def test_junk_results_are_dropped(self):
+        async def search(word, limit=5):
+            return [
+                {"tid": "1", "title": "某短剧", "text": "某短剧全集免费下载 网盘 提取码 abcd", "forum": "f"},
+                {"tid": "2", "title": "某短剧讨论", "text": "某短剧这剧情我服了", "forum": "f"},
+            ]
+
+        duty = self.duty(search)
+        item = {"title": "t", "_review": {"score": 9, "keywords": ["某短剧"]}, "_body": "正文"}
+        await duty._cross_check([item], dict(self.HIT))
+        body = item.get("_body") or ""
+        self.assertIn("这剧情我服了", body)
+        self.assertNotIn("提取码", body, "网盘广告不该进上下文")
 
     async def test_cross_check_can_be_disabled(self):
         called = []
@@ -465,8 +530,7 @@ class CrossCheckTests(unittest.IsolatedAsyncioTestCase):
             called.append(word)
             return [{"tid": "1", "text": "x", "forum": "f"}]
 
-        plugin = NS(config={"tieba": {"enable": True}}, tieba=NS(search=search))
-        duty = duty_mod.BrowseDuty(plugin, Path(tempfile.mkdtemp(prefix="radar_cross_")))
+        duty = self.duty(search)
         await duty._cross_check([{"title": "t", "_review": {"score": 9}, "_body": ""}],
                                 {"cross_check": False})
         self.assertEqual(called, [])
@@ -475,10 +539,9 @@ class CrossCheckTests(unittest.IsolatedAsyncioTestCase):
         async def search(word, limit=5):
             raise RuntimeError("boom")
 
-        plugin = NS(config={"tieba": {"enable": True}}, tieba=NS(search=search))
-        duty = duty_mod.BrowseDuty(plugin, Path(tempfile.mkdtemp(prefix="radar_cross_")))
+        duty = self.duty(search)
         item = {"title": "t", "_review": {"score": 9, "keywords": ["t"]}, "_body": "正文"}
-        await duty._cross_check([item], {})
+        await duty._cross_check([item], dict(self.HIT))
         self.assertNotIn("_cross", item)
 
 

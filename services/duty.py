@@ -447,11 +447,21 @@ class BrowseDuty:
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"[CommunityRadar] 平台提醒跳过（{type(exc).__name__}）")
 
-    async def _cross_check(self, understood: list[dict], cfg: dict) -> None:
-        """顺着最在意的那条，再去别处看一眼别人怎么说。
+    #: 贴吧追查时要排除的垃圾帖特征：网盘广告、资源打包、引流贴。
+    _CROSS_JUNK = (
+        "网盘", "提取码", "在线观看", "完整版", "免费下载", "pwd=",
+        "资源分享", "百度云", "bd百度", "bd网盘",
+    )
 
-        人刷到一个东西觉得有意思，常会顺手去贴吧或别的地方搜一下评价；这一步就是把
-        这个习惯做出来：只挑一条、只多查一次，查到了就并进它的印象里，查不到就算。
+    async def _cross_check(self, understood: list[dict], cfg: dict) -> None:
+        """偶尔顺着最在意的那条，再去别处看一眼别人怎么说。
+
+        人刷到一个东西觉得有意思，会「有时候」顺手去搜一下评价——不是每次都去。
+        因此这里有两道闸：概率（``cross_check_chance``）与冷却（``cross_check_cooldown_minutes``），
+        避免每轮都变成「看完 B 站必去贴吧」的固定动作。
+
+        另外贴吧搜索结果里混着网盘广告和弱相关帖，必须筛掉：只保留正文里真的
+        提到这个关键词、且不像资源打包帖的那几条。
 
         Args:
             understood: 本轮已经看懂的内容条目。
@@ -459,6 +469,27 @@ class BrowseDuty:
         """
         if not understood or not cfg.get("cross_check", True):
             return
+        tieba_cfg = self.plugin.config.get("tieba") or {}
+        client = getattr(self.plugin, "tieba", None)
+        if client is None or not tieba_cfg.get("enable"):
+            return
+        store = getattr(self.plugin, "radar_store", None)
+        now = time.time()
+        # 冷却：刚查过就别再查，像人一样不会十分钟一趟。
+        cooldown = number(cfg, "cross_check_cooldown_minutes", 240, 0, 2880) * 60
+        if store is not None:
+            try:
+                last = float(store.get("cross_check_at") or 0)
+            except (TypeError, ValueError):
+                last = 0.0
+            if cooldown and now - last < cooldown:
+                return
+        # 概率：有感觉也不一定就去查。
+        chance = number(cfg, "cross_check_chance", 0.3, 0.0, 1.0)
+        if chance < 1 and random.random() > chance:
+            logger.debug("[CommunityRadar] 本轮没去别处追查（概率未命中）")
+            return
+
         # 挑「感想分最高」的一条，它在观感环节最有话可说。
         target = None
         best = -1.0
@@ -480,27 +511,41 @@ class BrowseDuty:
         if len(topic) < 2:
             return
 
+        try:
+            found = await client.search(topic, limit=5)
+        except Exception as exc:  # noqa: BLE001 - 查不到就算了，不影响本条
+            logger.debug(f"[CommunityRadar] 贴吧追查失败（{type(exc).__name__}）")
+            return
+
         notes: list[str] = []
-        tieba_cfg = self.plugin.config.get("tieba") or {}
-        client = getattr(self.plugin, "tieba", None)
-        if client is not None and tieba_cfg.get("enable"):
-            try:
-                found = await client.search(topic, limit=3)
-            except Exception as exc:  # noqa: BLE001 - 查不到就算了，不影响本条
-                logger.debug(f"[CommunityRadar] 贴吧追查失败（{type(exc).__name__}）")
-                found = []
-            for entry in found[:2]:
-                body = str(entry.get("text") or "").strip()
-                if not body:
-                    continue
-                forum = str(entry.get("forum") or "").strip()
-                notes.append(f"贴吧{('「' + forum + '」') if forum else ''}：{body[:160]}")
+        for entry in found:
+            body = str(entry.get("text") or "").strip()
+            heading = str(entry.get("title") or "")
+            if not body:
+                continue
+            blob = heading + body
+            # 只留真的提到这个关键词的帖子：搜索引擎会给弱相关结果。
+            if topic not in blob:
+                continue
+            if any(marker in blob.lower() for marker in self._CROSS_JUNK):
+                continue
+            forum = str(entry.get("forum") or "").strip()
+            notes.append(f"贴吧{('「' + forum + '」') if forum else ''}：{body[:160]}")
+            if len(notes) >= 2:
+                break
 
         if not notes:
+            logger.debug("[CommunityRadar] 追查没找到相关讨论（关键词：%s）", topic)
             return
         target["_cross"] = {"topic": topic, "notes": notes}
         body = str(target.get("_body") or "")
         target["_body"] = body + "\n\n顺手去别处看了看（不是同一条内容，只是相关讨论）：\n" + "\n".join(notes)
+        if store is not None:
+            try:
+                store.set("cross_check_at", now)
+            except Exception:  # noqa: BLE001
+                pass
+        logger.info("[CommunityRadar] 顺手去贴吧查了「%s」，取到 %s 条相关讨论", topic, len(notes))
 
     async def _from_watchlist(self, candidates: list[dict], count: int) -> list[dict]:
         """把「想刷列表」里的内容排到候选最前面。
@@ -1231,8 +1276,9 @@ class BrowseDuty:
             "- 不要编号，不要「今日精选」「以下是」「总结」这类开场白\n"
             "- 分 3~6 条发；有 3 张以上画面时，可以一条说一个画面\n"
             "- 这轮看了好几条时，可以只挑最有感觉的一条细聊，其余一句带过；不要逐条播报\n"
-            "- 如果你顺手去别处搜过相关讨论，可以自然地提一句「我又去贴吧翻了翻」，"
-            "但要说清那是别人的说法，不是你亲眼看的\n"
+            "- 只有证据里出现「顺手去别处看了看」时，才说你去别处查过；"
+            "说的时候用你自己的话，别每次都用同一句（不要固定写「我又去贴吧翻了翻」），"
+            "并且要说清那是别人的说法，不是你亲眼看的\n"
         )
         if style == "forward":
             chatty = (

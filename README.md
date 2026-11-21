@@ -113,7 +113,9 @@ https://github.com/arsnyeon/astrbot_plugin_community_radar
 | `browse.watch_per_run` | 一轮最多认真看几条，默认 3 |
 | `browse.pause_min_seconds` / `pause_max_seconds` | 两条之间的停顿，默认 20~90 秒 |
 | `browse.boredom_chance` | 看完一条就想收手的概率，默认 0.12 |
-| `browse.cross_check` | 刷到有意思的会去别处搜一下相关讨论 |
+| `browse.cross_check` | 刷到有意思的偶尔去贴吧搜一下相关讨论 |
+| `browse.cross_check_chance` | 去追查的概率，默认 0.3（不是每轮都去） |
+| `browse.cross_check_cooldown_minutes` | 两次追查的最小间隔，默认 240 分钟 |
 | `browse.interests_mode` | `auto` 由它自己决定搜什么 / `manual` / `hybrid` |
 | `tieba.enable` / `tieba.forums` | 启用贴吧；填要逛的吧名，留空则只按关键词搜 |
 | `share.style` | `chat`（分条聊天，默认）/ `forward`（随手转发） |

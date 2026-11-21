@@ -57,8 +57,20 @@
       "cross_check": {
         "type": "bool",
         "description": "刷到有意思的会去别处搜一下",
-        "hint": "开启后，某条内容它特别有感觉时，会顺手去贴吧等地搜一下相关讨论并带进聊天。每轮最多查一次，查不到就算了。",
+        "hint": "开启后，某条内容它特别有感觉时，会顺手去贴吧搜一下相关讨论并带进聊天。注意是「偶尔」：还受下面两个条件限制。",
         "default": true
+      },
+      "cross_check_chance": {
+        "type": "float",
+        "description": "去别处搜的概率",
+        "hint": "0~1，默认 0.3。有感觉也不一定每次都去，避免变成「看完 B 站必去贴吧」的固定动作。设为 0 等于关掉。",
+        "default": 0.3
+      },
+      "cross_check_cooldown_minutes": {
+        "type": "int",
+        "description": "两次追查的最小间隔（分钟）",
+        "hint": "默认 240。刚查过就不再查，像人一样不会十分钟跑一趟。",
+        "default": 240
       },
       "interests_mode": {
         "type": "string",
