@@ -9,7 +9,17 @@ MAX_ITEMS = 6
 TTL = 7 * 86400
 
 
-def remember(store, target: str, items: list[dict], now: float | None = None) -> None:
+def remember(store, target: str, items: list[dict], now: float | None = None,
+             rest: list[str] | None = None) -> None:
+    """记住这一轮分享过的内容，以及「留着等对方接话再说」的部分。
+
+    Args:
+        store: 台账。
+        target: 会话标识。
+        items: 分享的条目。
+        now: 当前时间，测试用。
+        rest: 没发出去、留给追问时展开的内容。
+    """
     target = str(target or "").strip()
     if not target or not items:
         return
@@ -31,7 +41,12 @@ def remember(store, target: str, items: list[dict], now: float | None = None) ->
         })
     if not kept:
         return
-    data[target] = {"at": now, "items": kept[:MAX_ITEMS]}
+    entry = {"at": now, "items": kept[:MAX_ITEMS]}
+    # 开场只发了一两句时，剩下的内容留在这里，等对方表现出兴趣再展开。
+    leftover = [str(x)[:200] for x in (rest or []) if str(x).strip()][:8]
+    if leftover:
+        entry["rest"] = leftover
+    data[target] = entry
     data = {k: v for k, v in data.items() if now - float(v.get("at") or 0) < TTL}
     if len(data) > MAX_TARGETS:
         data = dict(sorted(data.items(), key=lambda kv: float(kv[1].get("at") or 0), reverse=True)[:MAX_TARGETS])

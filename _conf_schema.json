@@ -538,6 +538,24 @@
         "hint": "开启后照常挑内容、生成文案，但不真的发出去，只把这一轮准备发的内容记在 /社区雷达 状态 里。建议先在群里观察一轮再关掉。",
         "default": false
       },
+      "short_first": {
+        "type": "bool",
+        "description": "先只发一句，等对方接了再展开",
+        "hint": "像人一样：先丢一句「我超这个也太离谱了」加链接，细节留到对方表现出兴趣再说。关闭则一次讲完。",
+        "default": true
+      },
+      "short_first_max_parts": {
+        "type": "int",
+        "description": "开场最多几条",
+        "hint": "默认 2。允许 1~2 条，不要写死成一句：心情不同长短也不同。",
+        "default": 2
+      },
+      "short_first_max_chars": {
+        "type": "int",
+        "description": "开场每条约多少字",
+        "hint": "默认 90。只是提示模型别啰嗦，不会硬截断正文。",
+        "default": 90
+      },
       "min_score_to_share": {
         "type": "int",
         "description": "至少多喜欢才值得分享",
@@ -849,6 +867,24 @@
         "description": "轮询间隔（秒）",
         "default": 300
       },
+      "short_first": {
+        "type": "bool",
+        "description": "先只发一句，等对方接了再展开",
+        "hint": "像人一样：先丢一句「我超这个也太离谱了」加链接，细节留到对方表现出兴趣再说。关闭则一次讲完。",
+        "default": true
+      },
+      "short_first_max_parts": {
+        "type": "int",
+        "description": "开场最多几条",
+        "hint": "默认 2。允许 1~2 条，不要写死成一句：心情不同长短也不同。",
+        "default": 2
+      },
+      "short_first_max_chars": {
+        "type": "int",
+        "description": "开场每条约多少字",
+        "hint": "默认 90。只是提示模型别啰嗦，不会硬截断正文。",
+        "default": 90
+      },
       "min_score_to_share": {
         "type": "int",
         "description": "至少多喜欢才值得分享",
@@ -891,6 +927,24 @@
         "type": "string",
         "description": "收藏夹ID",
         "default": ""
+      },
+      "short_first": {
+        "type": "bool",
+        "description": "先只发一句，等对方接了再展开",
+        "hint": "像人一样：先丢一句「我超这个也太离谱了」加链接，细节留到对方表现出兴趣再说。关闭则一次讲完。",
+        "default": true
+      },
+      "short_first_max_parts": {
+        "type": "int",
+        "description": "开场最多几条",
+        "hint": "默认 2。允许 1~2 条，不要写死成一句：心情不同长短也不同。",
+        "default": 2
+      },
+      "short_first_max_chars": {
+        "type": "int",
+        "description": "开场每条约多少字",
+        "hint": "默认 90。只是提示模型别啰嗦，不会硬截断正文。",
+        "default": 90
       },
       "min_score_to_share": {
         "type": "int",

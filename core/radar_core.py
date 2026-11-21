@@ -611,6 +611,7 @@ class Cognition:
     async def choose(self, items: list[dict], cfg: dict) -> list[dict]:
         cap = int(number(cfg, "deep_watch_per_run", 2, 0, 5))
         if not cap:
+            logger.info("[CommunityRadar] deep_watch_per_run 为 0，本轮不深看任何内容")
             return []
         candidates = []
         for item in items:
@@ -620,6 +621,7 @@ class Cognition:
             if key and not (old and verified(old["result"])):
                 candidates.append(item)
         if not candidates:
+            logger.info("[CommunityRadar] 选片：候选全部已看过，本轮没有新内容")
             return []
         numbered = [{"i": i + 1, "title": it.get("title"), "via": it.get("_via", ""),
                      "description": str(it.get("_body") or it.get("desc") or "")[:200]}
@@ -630,6 +632,17 @@ class Cognition:
             + json.dumps(numbered, ensure_ascii=False), cfg=cfg, purpose="选片",
         )
         ids, parsed = parse_json_list(raw)
+        if parsed and not ids and candidates:
+            # 模型偶尔会「懒得挑」，直接给空数组，整轮就白跑了。
+            # 追问一次：让它必须给个态度（挑一条，或明确说都不想看）。
+            logger.info("[CommunityRadar] 选片：模型给了空数组，再问一次")
+            raw = await self.plugin.radar_ai.ask(
+                f"人格：{await self.persona()}\n偏好：{self.store.preference_text()}\n"
+                f"你刚才一条都没挑。从下面这些里挑 1 到 {cap} 条相对最值得看的，"
+                "只输出编号 JSON 数组；如果确实一条都不想看，就只输出 []。\n"
+                + json.dumps(numbered, ensure_ascii=False), cfg=cfg, purpose="选片重问",
+            )
+            ids, parsed = parse_json_list(raw)
         if parsed:
             chosen = []
             for i in ids:
@@ -637,9 +650,14 @@ class Cognition:
                     chosen.append(candidates[i - 1])
             if ids and not chosen:
                 # 数组里全是无效编号，更像模型给错了，按保守策略照看。
+                logger.info("[CommunityRadar] 选片：编号全部无效，按保守策略照看 %s 条", cap)
                 return candidates[:cap]
             # 模型明确给了空数组时尊重它：不为了凑数去抽帧和跑视觉模型。
+            logger.info("[CommunityRadar] 选片：候选 %s 条，选中 %s 条（模型返回 %s 字符）",
+                        len(candidates), len(chosen), len(raw))
             return chosen[:cap]
+        logger.info("[CommunityRadar] 选片：模型返回无法解析（%s 字符），按保守策略照看 %s 条",
+                    len(raw), cap)
         return candidates[:cap]
 
     def recall(self, query="", limit=5) -> str:

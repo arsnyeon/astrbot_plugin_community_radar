@@ -269,7 +269,11 @@ class HooksMixin:
     @filter.on_llm_request()
     @entry_handler
     async def _on_recent_share(self, event: AstrMessageEvent, req: ProviderRequest):
-        """刚分享过内容时，把摘要带进当前会话，方便用户直接追问细节。"""
+        """刚分享过内容时，把摘要与「留着没说的部分」带进当前会话。
+
+        分享时只发了开场的一两句，细节留在会话记录里。这里把它们交回模型，但
+        明确要求：只有对方表现出兴趣才展开；敷衍、换话题、只回表情就别硬讲。
+        """
         if not (self.config.get("share") or {}).get("auto_followup", True):
             return
         try:
@@ -277,11 +281,21 @@ class HooksMixin:
             entry = self._recent_share(umo)
             if not entry:
                 return
-            lines = ["【你刚在这个会话分享过的内容，用户可能追问细节；据此回答，不确定就说明局限】"]
+            lines = ["【你刚在这个会话分享过内容，开场只说了一两句，细节还留着】"]
             for item in entry.get("items", [])[:2]:
                 lines.append(f"- 《{item.get('title')}》 {item.get('url')}")
                 if item.get("digest"):
                     lines.append(f"  摘要：{str(item['digest'])[:500]}")
+            rest = [str(x) for x in (entry.get("rest") or []) if str(x).strip()]
+            if rest:
+                lines.append("【当时没说完、可以接着说的】")
+                for part in rest[:6]:
+                    lines.append(f"- {part}")
+                lines.append(
+                    "对方要是明显感兴趣（追问细节、说想看、接你的话往下聊），就自然挑一两条展开，"
+                    "像接着刚才的话往下说，别从头复述。"
+                    "如果只是敷衍、发表情、或者聊别的了，就别硬展开，正常接话就行。"
+                )
             lines.append("不要编造摘要之外的情节；需要核实原片时可让主人用 /雷达补看。")
             self._append_temp(req, "\n".join(lines))
         except Exception as exc:  # noqa: BLE001

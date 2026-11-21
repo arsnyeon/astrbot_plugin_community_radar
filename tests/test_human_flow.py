@@ -55,6 +55,7 @@ comments = __import__(pkg.__name__ + ".media.comments", fromlist=["x"])
 duty_mod = __import__(pkg.__name__ + ".services.duty", fromlist=["x"])
 autopilot_mod = __import__(pkg.__name__ + ".services.autopilot", fromlist=["x"])
 video = __import__(pkg.__name__ + ".media.video_watch", fromlist=["x"])
+core_mod = __import__(pkg.__name__ + ".core.radar_core", fromlist=["x"])
 NS = types.SimpleNamespace
 
 
@@ -182,7 +183,7 @@ class FlowOrderTests(unittest.IsolatedAsyncioTestCase):
             topic_watch=None,
         )
         duty = duty_mod.BrowseDuty(plugin, store.directory)
-        duty._summarize = AsyncMock(return_value=([], [], "", []))
+        duty._summarize = AsyncMock(return_value=([], [], "", [], []))
         original = duty_mod.collect_comments
         duty_mod.collect_comments = collect
         try:
@@ -232,7 +233,7 @@ class FlowOrderTests(unittest.IsolatedAsyncioTestCase):
             topic_watch=None,
         )
         duty = duty_mod.BrowseDuty(plugin, store.directory)
-        duty._summarize = AsyncMock(return_value=([], [], "", []))
+        duty._summarize = AsyncMock(return_value=([], [], "", [], []))
         original = duty_mod.collect_comments
         duty_mod.collect_comments = collect
         try:
@@ -292,7 +293,7 @@ class FlowOrderTests(unittest.IsolatedAsyncioTestCase):
             topic_watch=None,
         )
         duty = duty_mod.BrowseDuty(plugin, store.directory)
-        duty._summarize = AsyncMock(return_value=([], [], "", []))
+        duty._summarize = AsyncMock(return_value=([], [], "", [], []))
         original = duty_mod.collect_comments
         duty_mod.collect_comments = collect
         try:
@@ -581,21 +582,24 @@ class BrokenSummaryTests(unittest.IsolatedAsyncioTestCase):
         return [{"bvid": "BV1xx411c7mD", "title": "标题", "_link": "https://x/y"}]
 
     async def test_salvages_messages_from_broken_json(self):
-        parts, _picked, _layout, media = await self.duty(self.BROKEN)._summarize(
+        parts, _picked, _layout, media, rest = await self.duty(self.BROKEN)._summarize(
             self.bili(), [], {}, [])
-        self.assertEqual(len(parts), 4, "应当把 messages 数组抢救出来")
-        self.assertFalse(any("{" in p or "}" in p for p in parts), "不能带花括号")
-        self.assertFalse(any("image_layout" in p for p in parts))
+        # 开场只发一句，其余留作「等对方接话再讲」
+        self.assertEqual(len(parts), 1, "开场应该只有一句")
+        self.assertEqual(len(rest), 3, "剩下三条应留到对方接话后")
+        everything = parts + rest
+        self.assertFalse(any("{" in p or "}" in p for p in everything), "不能带花括号")
+        self.assertFalse(any("image_layout" in p for p in everything))
         self.assertEqual(media, [None] * len(parts))
 
     async def test_unsalvageable_json_sends_nothing(self):
         duty = self.duty('{"messages": [坏掉了')
-        parts, _p, _l, _m = await duty._summarize(self.bili(), [], {}, [])
+        parts, _p, _l, _m, _r = await duty._summarize(self.bili(), [], {}, [])
         self.assertEqual(parts, [], "坏到救不回来就这轮不发")
 
     async def test_plain_prose_still_falls_back(self):
         duty = self.duty("这个视频挺有意思的。不过也就那样吧。")
-        parts, _p, _l, _m = await duty._summarize(self.bili(), [], {}, [])
+        parts, _p, _l, _m, _r = await duty._summarize(self.bili(), [], {}, [])
         self.assertEqual(len(parts), 2, "纯文本输出仍按句切分")
         self.assertTrue(all("{" not in p for p in parts))
 
@@ -612,6 +616,119 @@ class BrokenSummaryTests(unittest.IsolatedAsyncioTestCase):
 
     def test_balanced_slice_unbalanced_returns_empty(self):
         self.assertEqual(duty_mod.BrowseDuty._balanced_slice('{"a":1', 0), "")
+
+
+class ShortFirstTests(unittest.IsolatedAsyncioTestCase):
+    """像人一样先丢一句，细节留到对方接话再说。"""
+
+    def duty(self, raw: str, **share):
+        async def ask(*a, **k):
+            return raw
+
+        cfg = {"style": "chat", "short_first": True}
+        cfg.update(share)
+        plugin = NS(config={"share": cfg},
+                    duty=NS(_bot_persona=AsyncMock(return_value="")),
+                    radar_ai=NS(ask=ask))
+        return duty_mod.BrowseDuty(plugin, Path(tempfile.mkdtemp(prefix="radar_short_")))
+
+    def bili(self):
+        return [{"bvid": "BV1xx411c7mD", "title": "标题", "_link": "https://x/y"}]
+
+    async def test_opener_and_rest_are_split(self):
+        raw = ('{"opener":["我超这个也太离谱了 https://x/y"],'
+               '"rest":["第二个画面里那只手在抖","评论区有人在算成本","我自己的看法是……"],'
+               '"pick":1,"image_layout":"mixed"}')
+        parts, _p, _l, _m, rest = await self.duty(raw)._summarize(self.bili(), [], {}, [])
+        self.assertEqual(len(parts), 1, "开场只发一句")
+        self.assertIn("https://x/y", parts[0], "开场要带链接")
+        self.assertEqual(len(rest), 3, "其余留到接话后")
+
+    async def test_legacy_messages_become_opener_plus_rest(self):
+        raw = '{"messages":["第一句","第二句","第三句"],"pick":1}'
+        parts, _p, _l, _m, rest = await self.duty(raw)._summarize(self.bili(), [], {}, [])
+        self.assertEqual(parts, ["第一句"], "模型没按新格式来也只发第一句")
+        self.assertEqual(rest, ["第二句", "第三句"])
+
+    async def test_opener_part_cap_is_respected(self):
+        raw = '{"opener":["一","二","三","四"]}'
+        parts, _p, _l, _m, rest = await self.duty(
+            raw, short_first_max_parts=2)._summarize(self.bili(), [], {}, [])
+        self.assertEqual(len(parts), 2)
+        self.assertEqual(rest, ["三", "四"], "多出来的应并进 rest 而不是丢掉")
+
+    async def test_short_first_off_sends_everything(self):
+        raw = '{"messages":["第一句","第二句","第三句"],"pick":1}'
+        parts, _p, _l, _m, rest = await self.duty(
+            raw, short_first=False)._summarize(self.bili(), [], {}, [])
+        self.assertEqual(len(parts), 3, "关掉后才一次讲完")
+        self.assertEqual(rest, [])
+
+    async def test_rest_is_saved_for_followup(self):
+        from radar_human_test.core.radar_session import recent
+
+        directory = Path(tempfile.mkdtemp(prefix="radar_short_s_"))
+        values = {}
+        store = NS(get=lambda k, d=None: values.get(k, d),
+                   set=lambda k, v: values.__setitem__(k, v),
+                   directory=directory, reserve=lambda *a, **k: (1, ""),
+                   finish=lambda *a, **k: None)
+        plugin = NS(config={"share": {"enable": True, "segment": True, "segment_delay": 0}},
+                    radar_store=store,
+                    context=NS(send_message=AsyncMock(return_value=True)))
+        duty = duty_mod.BrowseDuty(plugin, directory)
+        items = [{"title": "标题", "_evidence": {"content_id": "bili:BV1xx411c7mD",
+                                                 "url": "https://x/y", "digest": "摘要"}}]
+        await duty._send(["开场一句"], {"targets": ["x:FriendMessage:1"]},
+                         context_items=items, rest=["留着说的细节"])
+        entry = recent(store, "x:FriendMessage:1", 45)
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.get("rest"), ["留着说的细节"])
+
+
+class ChooseRetryTests(unittest.IsolatedAsyncioTestCase):
+    """模型给空数组时追问一次，避免整轮空转。"""
+
+    def cognition(self, replies):
+        answers = list(replies)
+
+        async def ask(*a, **k):
+            return answers.pop(0) if answers else "[]"
+
+        store = NS(memory=lambda key: None, preference_text=lambda: "偏好")
+        plugin = NS(radar_store=store, radar_ai=NS(ask=ask), config={},
+                    duty=NS(_bot_persona=AsyncMock(return_value="")))
+        return core_mod.Cognition(plugin)
+
+    def items(self, n=4):
+        # content_id 只认完整的 BV 号（BV 后 10 位），否则候选会被当成无效链接跳过。
+        return [{"title": f"候选{i}", "bvid": f"BV1xx411c7m{i}",
+                 "_link": f"https://www.bilibili.com/video/BV1xx411c7m{i}"}
+                for i in range(1, n + 1)]
+
+    async def test_empty_then_pick(self):
+        cog = self.cognition(["[]", "[2]"])
+        chosen = await cog.choose(self.items(), {"deep_watch_per_run": 2})
+        self.assertEqual([c["title"] for c in chosen], ["候选2"], "重问后应当挑中一条")
+
+    async def test_empty_twice_is_respected(self):
+        cog = self.cognition(["[]", "[]"])
+        self.assertEqual(await cog.choose(self.items(), {"deep_watch_per_run": 2}), [])
+
+    async def test_normal_pick_does_not_retry(self):
+        asked = []
+
+        async def ask(*a, **k):
+            asked.append(k.get("purpose"))
+            return "[1]"
+
+        store = NS(memory=lambda key: None, preference_text=lambda: "偏好")
+        plugin = NS(radar_store=store, radar_ai=NS(ask=ask), config={},
+                    duty=NS(_bot_persona=AsyncMock(return_value="")))
+        cog = core_mod.Cognition(plugin)
+        chosen = await cog.choose(self.items(), {"deep_watch_per_run": 2})
+        self.assertEqual(len(chosen), 1)
+        self.assertEqual(len(asked), 1, "正常挑中时不该多问一次")
 
 
 class PageOverviewTests(unittest.TestCase):
